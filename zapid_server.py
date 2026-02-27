@@ -6,12 +6,19 @@ import os
 import time
 import re
 from apscheduler.schedulers.background import BackgroundScheduler
-from openai import OpenAI
+
+# ==============================
+# CONFIGURAÇÃO OPENAI SEGURA
+# ==============================
+try:
+    from openai import OpenAI
+except:
+    OpenAI = None
 
 app = Flask(__name__)
 
 # ==============================
-# CONFIG
+# VARIÁVEIS DE AMBIENTE
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -20,15 +27,26 @@ cmc_api_key = os.environ.get("CMC_API_KEY")
 openai_api_key = os.environ.get("OPENAI_API_KEY")
 
 client = Client(account_sid, auth_token)
-gpt = OpenAI(api_key=openai_api_key)
 
+# ==============================
+# INICIALIZA GPT (SEM QUEBRAR)
+# ==============================
+if OpenAI and openai_api_key:
+    gpt = OpenAI()
+else:
+    gpt = None
+    print("⚠ GPT não configurado.")
+
+# ==============================
+# CONTROLE
+# ==============================
 vip_users = []
 alerts = {}
 price_cache = {}
 CACHE_TIME = 20
 
 # ==============================
-# COINMARKETCAP
+# FUNÇÃO PREÇO (CoinMarketCap)
 # ==============================
 def get_price(symbol):
     now = time.time()
@@ -64,14 +82,17 @@ def get_price(symbol):
         return {"price": 0, "change": 0}
 
 # ==============================
-# GPT RESPOSTA
+# FUNÇÃO GPT
 # ==============================
 def ask_gpt(question):
+    if not gpt:
+        return "🤖 IA não configurada no servidor."
+
     try:
         response = gpt.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Você é um especialista em criptomoedas. Responda de forma clara, objetiva e educativa."},
+                {"role": "system", "content": "Você é especialista em criptomoedas. Responda de forma clara e objetiva."},
                 {"role": "user", "content": question}
             ],
             max_tokens=300
@@ -118,7 +139,8 @@ scheduler.start()
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
-    return "ZapID Market 5.0 IA ONLINE 🚀", 200
+    return "ZapID Market 5.1 ONLINE 🚀", 200
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -135,10 +157,10 @@ def webhook():
     }
 
     # ==========================
-    # CONSULTA DE PREÇO
+    # CONSULTA PREÇO
     # ==========================
     for key in coins:
-        if key in msg and "acima" not in msg:
+        if key in msg:
             symbol = coins[key]
             data = get_price(symbol)
 
@@ -154,7 +176,7 @@ def webhook():
             return str(resp)
 
     # ==========================
-    # SE NÃO ENTROU EM PREÇO → USA GPT
+    # FALLBACK PARA IA
     # ==========================
     ai_response = ask_gpt(incoming_msg)
     resp.message(ai_response)
