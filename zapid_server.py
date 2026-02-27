@@ -6,34 +6,33 @@ import os
 import time
 import re
 from apscheduler.schedulers.background import BackgroundScheduler
+from openai import OpenAI
 
 app = Flask(__name__)
 
 # ==============================
-# CONFIGURAÇÕES
+# CONFIG
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
 twilio_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
 cmc_api_key = os.environ.get("CMC_API_KEY")
+openai_api_key = os.environ.get("OPENAI_API_KEY")
 
 client = Client(account_sid, auth_token)
+gpt = OpenAI(api_key=openai_api_key)
 
-# ==============================
-# CONTROLE
-# ==============================
 vip_users = []
 alerts = {}
 price_cache = {}
-CACHE_TIME = 20  # segundos
+CACHE_TIME = 20
 
 # ==============================
-# FUNÇÃO PREÇO CMC
+# COINMARKETCAP
 # ==============================
 def get_price(symbol):
     now = time.time()
 
-    # CACHE
     if symbol in price_cache:
         data, timestamp = price_cache[symbol]
         if now - timestamp < CACHE_TIME:
@@ -41,13 +40,8 @@ def get_price(symbol):
 
     try:
         url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-        headers = {
-            "X-CMC_PRO_API_KEY": cmc_api_key
-        }
-        params = {
-            "symbol": symbol,
-            "convert": "USD"
-        }
+        headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
+        params = {"symbol": symbol, "convert": "USD"}
 
         response = requests.get(url, headers=headers, params=params, timeout=5)
 
@@ -66,11 +60,31 @@ def get_price(symbol):
         return data
 
     except Exception as e:
-        print("Erro geral CMC:", e)
+        print("Erro CMC:", e)
         return {"price": 0, "change": 0}
 
 # ==============================
-# ENVIO ALERTA
+# GPT RESPOSTA
+# ==============================
+def ask_gpt(question):
+    try:
+        response = gpt.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Você é um especialista em criptomoedas. Responda de forma clara, objetiva e educativa."},
+                {"role": "user", "content": question}
+            ],
+            max_tokens=300
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        print("Erro GPT:", e)
+        return "Erro ao consultar IA."
+
+# ==============================
+# ALERTAS
 # ==============================
 def send_alert(user, symbol, current):
     client.messages.create(
@@ -79,35 +93,15 @@ def send_alert(user, symbol, current):
         to=user
     )
 
-# ==============================
-# VERIFICADOR ALERTAS
-# ==============================
 def check_alerts():
     try:
         for user, user_alerts in list(alerts.items()):
             for alert in user_alerts[:]:
-                data = get_price(alert["symbol"])
-                current = data["price"]
+                current = get_price(alert["symbol"])["price"]
 
                 if alert["type"] == "above" and current >= alert["target"]:
                     send_alert(user, alert["symbol"], current)
                     user_alerts.remove(alert)
-
-                elif alert["type"] == "below" and current <= alert["target"]:
-                    send_alert(user, alert["symbol"], current)
-                    user_alerts.remove(alert)
-
-                elif alert["type"] == "percent_up":
-                    target_price = alert["base"] * (1 + alert["target"]/100)
-                    if current >= target_price:
-                        send_alert(user, alert["symbol"], current)
-                        user_alerts.remove(alert)
-
-                elif alert["type"] == "percent_down":
-                    target_price = alert["base"] * (1 - alert["target"]/100)
-                    if current <= target_price:
-                        send_alert(user, alert["symbol"], current)
-                        user_alerts.remove(alert)
 
             if not user_alerts:
                 del alerts[user]
@@ -124,8 +118,7 @@ scheduler.start()
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
-    return "ZapID Market 4.1 ONLINE 🚀", 200
-
+    return "ZapID Market 5.0 IA ONLINE 🚀", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -134,7 +127,6 @@ def webhook():
 
     resp = MessagingResponse()
     msg = incoming_msg.lower().strip()
-    is_vip = sender in vip_users
 
     coins = {
         "btc": "BTC",
@@ -142,75 +134,18 @@ def webhook():
         "sol": "SOL"
     }
 
+    # ==========================
+    # CONSULTA DE PREÇO
+    # ==========================
     for key in coins:
-        if key in msg:
+        if key in msg and "acima" not in msg:
             symbol = coins[key]
             data = get_price(symbol)
 
             if data["price"] == 0:
-                resp.message("Erro ao consultar preço. Verifique API.")
+                resp.message("Erro ao consultar preço.")
                 return str(resp)
 
-            # Limite FREE
-            if sender not in alerts:
-                alerts[sender] = []
-
-            if not is_vip and len(alerts[sender]) >= 1:
-                resp.message("🔒 Free permite apenas 1 alerta ativo.")
-                return str(resp)
-
-            # ALERTA ACIMA
-            match = re.search(r'acima de (\d+)', msg)
-            if match:
-                target = float(match.group(1))
-                alerts[sender].append({
-                    "symbol": symbol,
-                    "type": "above",
-                    "target": target,
-                    "base": data["price"]
-                })
-                resp.message(f"🔔 Alerta criado: {symbol} acima de ${target}")
-                return str(resp)
-
-            # ALERTA ABAIXO
-            match = re.search(r'abaixo de (\d+)', msg)
-            if match:
-                target = float(match.group(1))
-                alerts[sender].append({
-                    "symbol": symbol,
-                    "type": "below",
-                    "target": target,
-                    "base": data["price"]
-                })
-                resp.message(f"🔔 Alerta criado: {symbol} abaixo de ${target}")
-                return str(resp)
-
-            # ALERTA POR %
-            match = re.search(r'cair (\d+)%', msg)
-            if match:
-                percent = float(match.group(1))
-                alerts[sender].append({
-                    "symbol": symbol,
-                    "type": "percent_down",
-                    "target": percent,
-                    "base": data["price"]
-                })
-                resp.message(f"🔔 Alerta criado: {symbol} cair {percent}%")
-                return str(resp)
-
-            match = re.search(r'subir (\d+)%', msg)
-            if match:
-                percent = float(match.group(1))
-                alerts[sender].append({
-                    "symbol": symbol,
-                    "type": "percent_up",
-                    "target": percent,
-                    "base": data["price"]
-                })
-                resp.message(f"🔔 Alerta criado: {symbol} subir {percent}%")
-                return str(resp)
-
-            # CONSULTA SIMPLES
             resp.message(
                 f"💰 {symbol}\n"
                 f"Preço: ${data['price']:,.2f}\n"
@@ -218,18 +153,13 @@ def webhook():
             )
             return str(resp)
 
-    resp.message(
-        "📊 ZapID Market 4.1\n\n"
-        "Exemplos:\n"
-        "btc\n"
-        "btc acima de 300000\n"
-        "btc abaixo de 250000\n"
-        "btc cair 5%\n"
-        "btc subir 3%"
-    )
+    # ==========================
+    # SE NÃO ENTROU EM PREÇO → USA GPT
+    # ==========================
+    ai_response = ask_gpt(incoming_msg)
+    resp.message(ai_response)
 
     return str(resp)
-
 
 # ==============================
 # START
