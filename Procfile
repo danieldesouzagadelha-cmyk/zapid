@@ -1,1 +1,1 @@
-web: gunicorn zapid_server:app 
+web: gunicorn zapid_server:app
