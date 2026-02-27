@@ -3,12 +3,14 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 import requests
 import os
+import time
+import re
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
 # ==============================
-# CONFIG TWILIO (Render ENV)
+# CONFIG TWILIO
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -17,81 +19,96 @@ twilio_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
 client = Client(account_sid, auth_token)
 
 # ==============================
-# CONTROLE VIP (MANUAL POR ENQUANTO)
-# Coloque aqui números VIP
-# Exemplo: "whatsapp:+5588999999999"
+# VIP USERS
 # ==============================
 vip_users = [
     # "whatsapp:+5588999999999"
 ]
 
 # ==============================
-# ALERTAS EM MEMÓRIA
-# formato: { usuario: [(moeda, preco_alvo), ...] }
+# ALERTAS
+# Estrutura:
+# { user: [ {type, coin, target, base_price} ] }
 # ==============================
 alerts = {}
 
 # ==============================
-# FUNÇÕES MERCADO
+# CACHE
 # ==============================
+price_cache = {}
+CACHE_TIME = 10
+
 def get_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
-    r = requests.get(url).json()
-    return {
-        "price": float(r["lastPrice"]),
-        "change": float(r["priceChangePercent"]),
-        "volume": float(r["volume"])
-    }
+    now = time.time()
 
-def get_top():
-    coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    result = "🏆 Top Criptos:\n\n"
-    for coin in coins:
-        data = get_price(coin)
-        name = coin.replace("USDT","")
-        result += f"{name} - ${data['price']:,.2f} ({data['change']:.2f}%)\n"
-    return result
+    if symbol in price_cache:
+        data, timestamp = price_cache[symbol]
+        if now - timestamp < CACHE_TIME:
+            return data
 
-def get_trending():
-    coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    data_list = []
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+        r = requests.get(url, timeout=5).json()
 
-    for coin in coins:
-        data = get_price(coin)
-        data_list.append((coin, data["change"], data["price"]))
+        data = {
+            "price": float(r["lastPrice"]),
+            "change": float(r["priceChangePercent"]),
+            "volume": float(r["volume"])
+        }
 
-    data_list.sort(key=lambda x: x[1], reverse=True)
+        price_cache[symbol] = (data, now)
+        return data
 
-    result = "🔥 Tendências (24h):\n\n"
-    for coin, change, price in data_list:
-        name = coin.replace("USDT","")
-        result += f"{name} - ${price:,.2f} ({change:.2f}%)\n"
-
-    return result
+    except:
+        return {"price": 0, "change": 0, "volume": 0}
 
 # ==============================
-# VERIFICADOR DE ALERTAS
+# ALERT CHECKER
 # ==============================
 def check_alerts():
     try:
         for user, user_alerts in list(alerts.items()):
             for alert in user_alerts[:]:
-                coin, target = alert
-                current = get_price(coin)["price"]
+                data = get_price(alert["coin"])
+                current = data["price"]
 
-                if current >= target:
-                    client.messages.create(
-                        body=f"🚨 ALERTA {coin.replace('USDT','')}!\nPreço atual: ${current:,.2f}",
-                        from_=twilio_number,
-                        to=user
-                    )
-                    user_alerts.remove(alert)
+                if alert["type"] == "price_above":
+                    if current >= alert["target"]:
+                        send_alert(user, alert, current)
+                        user_alerts.remove(alert)
+
+                elif alert["type"] == "price_below":
+                    if current <= alert["target"]:
+                        send_alert(user, alert, current)
+                        user_alerts.remove(alert)
+
+                elif alert["type"] == "percent_up":
+                    target_price = alert["base_price"] * (1 + alert["target"]/100)
+                    if current >= target_price:
+                        send_alert(user, alert, current)
+                        user_alerts.remove(alert)
+
+                elif alert["type"] == "percent_down":
+                    target_price = alert["base_price"] * (1 - alert["target"]/100)
+                    if current <= target_price:
+                        send_alert(user, alert, current)
+                        user_alerts.remove(alert)
 
             if not user_alerts:
                 del alerts[user]
 
     except Exception as e:
         print("Erro scheduler:", e)
+
+def send_alert(user, alert, current):
+    client.messages.create(
+        body=(
+            f"🚨 ALERTA {alert['coin'].replace('USDT','')}!\n"
+            f"Preço atual: ${current:,.2f}"
+        ),
+        from_=twilio_number,
+        to=user
+    )
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(check_alerts, "interval", seconds=30)
@@ -102,87 +119,118 @@ scheduler.start()
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
-    return "ZapID Market VIP ONLINE 🚀", 200
+    return "ZapID Market 3.0 ONLINE 🚀", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    incoming_msg = request.form.get("Body")
+    incoming_msg = request.form.get("Body", "")
     sender = request.form.get("From")
-
     resp = MessagingResponse()
 
-    if incoming_msg:
-        msg = incoming_msg.lower().strip()
-        is_vip = sender in vip_users
+    msg = incoming_msg.lower().strip()
+    is_vip = sender in vip_users
 
-        # ==========================
-        # CONSULTAS
-        # ==========================
-        if msg == "btc":
-            data = get_price("BTCUSDT")
-            resp.message(f"💰 BTC\nPreço: ${data['price']:,.2f}\n24h: {data['change']:.2f}%")
+    # ==========================
+    # CONSULTA SIMPLES
+    # ==========================
+    if "btc" in msg and "alert" not in msg:
+        data = get_price("BTCUSDT")
+        resp.message(
+            f"💰 BTC\n"
+            f"Preço: ${data['price']:,.2f}\n"
+            f"24h: {data['change']:.2f}%"
+        )
+        return str(resp)
 
-        elif msg == "eth":
-            data = get_price("ETHUSDT")
-            resp.message(f"💎 ETH\nPreço: ${data['price']:,.2f}\n24h: {data['change']:.2f}%")
+    # ==========================
+    # CRIAR ALERTAS INTELIGENTES
+    # ==========================
+    coin_map = {
+        "btc": "BTCUSDT",
+        "eth": "ETHUSDT",
+        "sol": "SOLUSDT"
+    }
 
-        elif msg == "sol":
-            data = get_price("SOLUSDT")
-            resp.message(f"⚡ SOL\nPreço: ${data['price']:,.2f}\n24h: {data['change']:.2f}%")
+    for key in coin_map:
+        if key in msg:
+            coin = coin_map[key]
+            current_price = get_price(coin)["price"]
 
-        elif msg == "top":
-            resp.message(get_top())
+            if sender not in alerts:
+                alerts[sender] = []
 
-        elif msg == "tendencias":
-            resp.message(get_trending())
+            if not is_vip and len(alerts[sender]) >= 1:
+                resp.message("🔒 Free permite apenas 1 alerta.")
+                return str(resp)
 
-        # ==========================
-        # CRIAR ALERTA
-        # ==========================
-        elif msg.startswith("alerta"):
-            try:
-                parts = msg.split()
-                coin = parts[1].upper() + "USDT"
-                target = float(parts[2])
+            # acima de
+            match = re.search(r'acima de (\d+)', msg)
+            if match:
+                target = float(match.group(1))
+                alerts[sender].append({
+                    "type": "price_above",
+                    "coin": coin,
+                    "target": target,
+                    "base_price": current_price
+                })
+                resp.message(f"🔔 Alerta criado: {key.upper()} acima de ${target}")
+                return str(resp)
 
-                if sender not in alerts:
-                    alerts[sender] = []
+            # abaixo de
+            match = re.search(r'abaixo de (\d+)', msg)
+            if match:
+                target = float(match.group(1))
+                alerts[sender].append({
+                    "type": "price_below",
+                    "coin": coin,
+                    "target": target,
+                    "base_price": current_price
+                })
+                resp.message(f"🔔 Alerta criado: {key.upper()} abaixo de ${target}")
+                return str(resp)
 
-                # 🔒 Limite Free
-                if not is_vip and len(alerts[sender]) >= 1:
-                    resp.message(
-                        "🔒 Plano Free permite apenas 1 alerta.\n"
-                        "Torne-se VIP para alertas ilimitados."
-                    )
-                    return str(resp)
+            # cair %
+            match = re.search(r'cair (\d+)%', msg)
+            if match:
+                percent = float(match.group(1))
+                alerts[sender].append({
+                    "type": "percent_down",
+                    "coin": coin,
+                    "target": percent,
+                    "base_price": current_price
+                })
+                resp.message(f"🔔 Alerta criado: {key.upper()} cair {percent}%")
+                return str(resp)
 
-                alerts[sender].append((coin, target))
+            # subir %
+            match = re.search(r'subir (\d+)%', msg)
+            if match:
+                percent = float(match.group(1))
+                alerts[sender].append({
+                    "type": "percent_up",
+                    "coin": coin,
+                    "target": percent,
+                    "base_price": current_price
+                })
+                resp.message(f"🔔 Alerta criado: {key.upper()} subir {percent}%")
+                return str(resp)
 
-                resp.message(
-                    f"🔔 Alerta criado!\n"
-                    f"Moeda: {coin.replace('USDT','')}\n"
-                    f"Preço alvo: ${target:,.2f}"
-                )
-
-            except:
-                resp.message("Use:\nalerta btc 70000")
-
-        else:
-            resp.message(
-                "📊 ZapID Market\n\n"
-                "btc / eth / sol → preço\n"
-                "top → ranking\n"
-                "tendencias → em alta\n"
-                "alerta btc 70000\n\n"
-                "🔒 Free: 1 alerta\n"
-                "💎 VIP: ilimitado"
-            )
+    # ==========================
+    # MENU
+    # ==========================
+    resp.message(
+        "📊 ZapID Market 3.0\n\n"
+        "Exemplos:\n"
+        "btc acima de 300000\n"
+        "btc abaixo de 250000\n"
+        "me avisa quando btc cair 5%\n"
+        "btc subir 3%\n\n"
+        "🔒 Free: 1 alerta\n"
+        "💎 VIP: ilimitado"
+    )
 
     return str(resp)
 
-# ==============================
-# START SERVER
-# ==============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
