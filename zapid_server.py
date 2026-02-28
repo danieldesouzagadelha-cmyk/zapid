@@ -8,11 +8,6 @@ import re
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 
-try:
-    from openai import OpenAI
-except:
-    OpenAI = None
-
 app = Flask(__name__)
 
 # ==============================
@@ -22,31 +17,22 @@ account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
 twilio_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
 cmc_api_key = os.environ.get("CMC_API_KEY")
-openai_api_key = os.environ.get("OPENAI_API_KEY")
 
 client = Client(account_sid, auth_token)
 
 # ==============================
-# DEFINA SEU NÚMERO VIP FIXO
+# COLOQUE SEU NÚMERO AQUI
 # ==============================
-MEU_NUMERO = "whatsapp:+55SEUNUMEROAQUI"
-
-# ==============================
-# GPT (OPCIONAL)
-# ==============================
-if OpenAI and openai_api_key:
-    gpt = OpenAI()
-else:
-    gpt = None
+MEU_NUMERO = "whatsapp:+5585SEUNUMEROAQUI"
 
 # ==============================
 # CACHE
 # ==============================
 price_cache = {}
-CACHE_TIME = 20
+CACHE_TIME = 30
 
 # ==============================
-# PREÇO CMC
+# FUNÇÃO PREÇO
 # ==============================
 def get_price(symbol):
     now = time.time()
@@ -62,7 +48,6 @@ def get_price(symbol):
         params = {"symbol": symbol, "convert": "USD"}
 
         response = requests.get(url, headers=headers, params=params, timeout=5)
-
         data_json = response.json()["data"][symbol]["quote"]["USD"]
 
         data = {
@@ -77,19 +62,17 @@ def get_price(symbol):
         return {"price": 0, "change": 0}
 
 # ==============================
-# ALERTA DE QUEDA GLOBAL
+# ALERTA DE QUEDA (-5%)
 # ==============================
 def check_market_drop():
-    if not MEU_NUMERO:
-        return
-
     moedas = ["BTC", "ETH", "SOL", "BNB", "XRP"]
 
     for symbol in moedas:
         data = get_price(symbol)
+
         if data["change"] <= -5:
             client.messages.create(
-                body=f"📉 ALERTA DE QUEDA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
+                body=f"📉 ALERTA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
                 from_=twilio_number,
                 to=MEU_NUMERO
             )
@@ -99,6 +82,7 @@ def check_market_drop():
 # ==============================
 def agendar_lembrete(numero, hora, mensagem):
     hora_obj = datetime.strptime(hora, "%H:%M")
+
     scheduler.add_job(
         enviar_lembrete,
         'cron',
@@ -122,8 +106,12 @@ scheduler.add_job(check_market_drop, "interval", minutes=10)
 scheduler.start()
 
 # ==============================
-# WEBHOOK
+# ROTAS
 # ==============================
+@app.route("/", methods=["GET"])
+def home():
+    return "ZapID MONITOR ATIVO 🚀", 200
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.form.get("Body", "")
@@ -132,9 +120,7 @@ def webhook():
     resp = MessagingResponse()
     msg = incoming_msg.lower().strip()
 
-    # ==========================
     # CONSULTA PREÇO
-    # ==========================
     if msg in ["btc", "eth", "sol", "bnb", "xrp"]:
         symbol = msg.upper()
         data = get_price(symbol)
@@ -146,9 +132,7 @@ def webhook():
         )
         return str(resp)
 
-    # ==========================
     # LEMBRETE
-    # ==========================
     if msg.startswith("lembrete"):
         try:
             partes = msg.split(" ", 2)
@@ -158,34 +142,16 @@ def webhook():
             resp.message("⏰ Lembrete agendado!")
         except:
             resp.message("Use: lembrete 21:00 estudar cripto")
-
         return str(resp)
 
-    # ==========================
-    # IA (OPCIONAL)
-    # ==========================
-    if gpt:
-        resposta = gpt.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Especialista em criptomoedas."},
-                {"role": "user", "content": incoming_msg}
-            ],
-            max_tokens=200
-        )
-
-        resp.message(resposta.choices[0].message.content)
-    else:
-        resp.message("Comando não reconhecido.")
+    resp.message(
+        "📊 ZapID Monitor\n\n"
+        "Digite:\n"
+        "btc / eth / sol / bnb / xrp\n"
+        "lembrete 21:00 estudar cripto"
+    )
 
     return str(resp)
-
-# ==============================
-# HOME
-# ==============================
-@app.route("/", methods=["GET"])
-def home():
-    return "ZapID VIP MONITOR ATIVO 🚀", 200
 
 # ==============================
 # START
