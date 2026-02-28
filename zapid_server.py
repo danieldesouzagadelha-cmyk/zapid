@@ -11,7 +11,7 @@ from groq import Groq
 app = Flask(__name__)
 
 # ==============================
-# CONFIGURAÇÕES
+# CONFIG
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -30,12 +30,12 @@ else:
     groq_client = None
 
 # ==============================
-# COLOQUE SEU NÚMERO AQUI
+# SEU NÚMERO
 # ==============================
 MEU_NUMERO = "whatsapp:+5585SEUNUMEROAQUI"
 
 # ==============================
-# CACHE DE PREÇO
+# CACHE
 # ==============================
 price_cache = {}
 CACHE_TIME = 30
@@ -105,7 +105,7 @@ def enviar_lembrete(numero, mensagem):
     )
 
 # ==============================
-# GROQ IA
+# IA GROQ
 # ==============================
 def ask_groq(question):
     if not groq_client:
@@ -157,19 +157,9 @@ def webhook():
         "xrp": "XRP"
     }
 
-    # DETECTAR MOEDA
-    for palavra, simbolo in moedas_map.items():
-        if palavra in msg:
-            data = get_price(simbolo)
-
-            resp.message(
-                f"💰 {simbolo}\n"
-                f"Preço: ${data['price']:,.2f}\n"
-                f"24h: {data['change']:.2f}%"
-            )
-            return str(resp)
-
+    # ==========================
     # LEMBRETE
+    # ==========================
     if msg.startswith("lembrete"):
         try:
             partes = msg.split(" ", 2)
@@ -181,7 +171,26 @@ def webhook():
             resp.message("Use: lembrete 21:00 estudar cripto")
         return str(resp)
 
+    palavras = msg.split()
+
+    # ==========================
+    # PREÇO (apenas se for mensagem curta)
+    # ==========================
+    if len(palavras) <= 2:
+        for palavra, simbolo in moedas_map.items():
+            if palavra in msg:
+                data = get_price(simbolo)
+
+                resp.message(
+                    f"💰 {simbolo}\n"
+                    f"Preço: ${data['price']:,.2f}\n"
+                    f"24h: {data['change']:.2f}%"
+                )
+                return str(resp)
+
+    # ==========================
     # IA GROQ
+    # ==========================
     resposta = ask_groq(incoming_msg)
     resp.message(resposta)
     return str(resp)
@@ -191,7 +200,7 @@ def webhook():
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
-    return "ZapID GROQ IA ATIVA 🚀", 200
+    return "ZapID GROQ ATIVO 🚀", 200
 
 # ==============================
 # START
