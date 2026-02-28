@@ -5,7 +5,6 @@ import requests
 import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from groq import Groq
-from datetime import datetime
 
 app = Flask(__name__)
 
@@ -18,11 +17,11 @@ groq_api_key = os.environ.get("GROQ_API_KEY")
 
 client = Client(account_sid, auth_token)
 
-MEU_NUMERO = "whatsapp:+5585SEUNUMERO"
+MEU_NUMERO = "whatsapp:+55SEUNUMERO"  # 🔥 COLOQUE SEU NUMERO
 
 ALERTA_QUEDA_PERCENTUAL = -4  # alerta se cair mais que -4%
 
-# ================= DADOS CMC =================
+# ================= CMC BTC DATA =================
 def get_btc_data():
     try:
         url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
@@ -46,6 +45,9 @@ def get_btc_data():
 # ================= IA ANALISE =================
 def gerar_analise_trader(dados):
     try:
+        if not groq_api_key:
+            return "GROQ_API_KEY não configurada."
+
         groq_client = Groq(api_key=groq_api_key)
 
         prompt = f"""
@@ -118,10 +120,8 @@ def verificar_queda():
 
 # ================= SCHEDULER =================
 scheduler = BackgroundScheduler()
-
 scheduler.add_job(enviar_relatorio_diario, "cron", hour=8, minute=0)
 scheduler.add_job(verificar_queda, "interval", minutes=15)
-
 scheduler.start()
 
 # ================= WEBHOOK =================
@@ -130,15 +130,28 @@ def webhook():
     incoming_msg = request.form.get("Body", "").lower().strip()
     resp = MessagingResponse()
 
+    # 🔹 PREÇO BTC
     if "valor btc" in incoming_msg or incoming_msg == "btc":
         dados = get_btc_data()
+        if not dados:
+            resp.message("Erro ao buscar dados.")
+            return str(resp)
+
         resp.message(
             f"💰 BTC\nPreço: ${dados['price']:,.2f}\n24h: {dados['change_24h']:.2f}%"
         )
         return str(resp)
 
-    if "analise" in incoming_msg:
+    # 🔹 ANALISE FLEXIVEL
+    if any(palavra in incoming_msg for palavra in [
+        "analise", "análise", "analize", "analisar",
+        "entrada", "trade", "trader"
+    ]):
         dados = get_btc_data()
+        if not dados:
+            resp.message("Erro ao buscar dados do BTC.")
+            return str(resp)
+
         analise = gerar_analise_trader(dados)
         resp.message(analise)
         return str(resp)
