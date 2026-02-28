@@ -22,20 +22,12 @@ groq_api_key = os.environ.get("GROQ_API_KEY")
 client = Client(account_sid, auth_token)
 
 # ==============================
-# GROQ CLIENT
+# SEU NÚMERO (coloque o seu)
 # ==============================
-if groq_api_key:
-    groq_client = Groq(api_key=groq_api_key)
-else:
-    groq_client = None
+MEU_NUMERO = "whatsapp:+5585SEUNUMERO"
 
 # ==============================
-# SEU NÚMERO
-# ==============================
-MEU_NUMERO = "whatsapp:+5585SEUNUMEROAQUI"
-
-# ==============================
-# CACHE
+# CACHE DE PREÇO
 # ==============================
 price_cache = {}
 CACHE_TIME = 30
@@ -68,7 +60,7 @@ def get_price(symbol):
         return {"price": 0, "change": 0}
 
 # ==============================
-# ALERTA DE QUEDA
+# ALERTA AUTOMÁTICO (queda 5%)
 # ==============================
 def check_market_drop():
     moedas = ["BTC", "ETH", "SOL", "BNB", "XRP"]
@@ -105,27 +97,35 @@ def enviar_lembrete(numero, mensagem):
     )
 
 # ==============================
-# IA GROQ
+# IA GROQ (CORRIGIDO)
 # ==============================
 def ask_groq(question):
-    if not groq_client:
-        return "IA não configurada."
-
     try:
-        completion = groq_client.chat.completions.create(
-            model="llama3-70b-8192",
+        if not groq_api_key:
+            return "GROQ_API_KEY não configurada."
+
+        client_groq = Groq(api_key=groq_api_key)
+
+        chat_completion = client_groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Você é especialista em criptomoedas. Responda de forma clara e direta."},
-                {"role": "user", "content": question}
+                {
+                    "role": "system",
+                    "content": "Você é especialista em criptomoedas. Responda de forma clara e direta."
+                },
+                {
+                    "role": "user",
+                    "content": question
+                }
             ],
+            model="llama3-8b-8192",
             temperature=0.5,
-            max_tokens=300
+            max_tokens=300,
         )
 
-        return completion.choices[0].message.content
+        return chat_completion.choices[0].message.content
 
     except Exception as e:
-        print("Erro GROQ:", e)
+        print("ERRO GROQ:", e)
         return "Erro ao consultar IA."
 
 # ==============================
@@ -174,7 +174,7 @@ def webhook():
     palavras = msg.split()
 
     # ==========================
-    # PREÇO (apenas se for mensagem curta)
+    # PREÇO (mensagem curta)
     # ==========================
     if len(palavras) <= 2:
         for palavra, simbolo in moedas_map.items():
