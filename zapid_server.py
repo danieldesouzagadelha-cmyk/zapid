@@ -11,7 +11,7 @@ from groq import Groq
 app = Flask(__name__)
 
 # ==============================
-# CONFIG
+# CONFIGURAÇÕES
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -56,7 +56,8 @@ def get_price(symbol):
         price_cache[symbol] = (data, now)
         return data
 
-    except:
+    except Exception as e:
+        print("Erro CMC:", e)
         return {"price": 0, "change": 0}
 
 # ==============================
@@ -97,32 +98,26 @@ def enviar_lembrete(numero, mensagem):
     )
 
 # ==============================
-# IA GROQ (CORRIGIDO)
+# IA GROQ (MODELO ATIVO)
 # ==============================
 def ask_groq(question):
     try:
         if not groq_api_key:
             return "GROQ_API_KEY não configurada."
 
-        client_groq = Groq(api_key=groq_api_key)
+        groq_client = Groq(api_key=groq_api_key)
 
-        chat_completion = client_groq.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Você é especialista em criptomoedas. Responda de forma clara e direta."
-                },
-                {
-                    "role": "user",
-                    "content": question
-                }
-            ],
+        response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "Você é especialista em criptomoedas. Responda de forma clara e direta."},
+                {"role": "user", "content": question}
+            ],
             temperature=0.5,
-            max_tokens=300,
+            max_tokens=300
         )
 
-        return chat_completion.choices[0].message.content
+        return response.choices[0].message.content
 
     except Exception as e:
         print("ERRO GROQ:", e)
@@ -157,9 +152,7 @@ def webhook():
         "xrp": "XRP"
     }
 
-    # ==========================
     # LEMBRETE
-    # ==========================
     if msg.startswith("lembrete"):
         try:
             partes = msg.split(" ", 2)
@@ -173,9 +166,7 @@ def webhook():
 
     palavras = msg.split()
 
-    # ==========================
-    # PREÇO (mensagem curta)
-    # ==========================
+    # CONSULTA DE PREÇO (mensagem curta)
     if len(palavras) <= 2:
         for palavra, simbolo in moedas_map.items():
             if palavra in msg:
@@ -188,9 +179,7 @@ def webhook():
                 )
                 return str(resp)
 
-    # ==========================
     # IA GROQ
-    # ==========================
     resposta = ask_groq(incoming_msg)
     resp.message(resposta)
     return str(resp)
@@ -206,5 +195,5 @@ def home():
 # START
 # ==============================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
