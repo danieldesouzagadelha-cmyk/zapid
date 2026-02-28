@@ -4,4 +4,4 @@ twilio
 requests
 apscheduler
 gunicorn
-openai
+groq
