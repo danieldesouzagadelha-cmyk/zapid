@@ -3,16 +3,13 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 import requests
 import os
-import time
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
 from groq import Groq
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ==============================
-# CONFIGURAÇÕES
-# ==============================
+# ================= CONFIG =================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
 twilio_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
@@ -21,179 +18,139 @@ groq_api_key = os.environ.get("GROQ_API_KEY")
 
 client = Client(account_sid, auth_token)
 
-# ==============================
-# SEU NÚMERO (coloque o seu)
-# ==============================
 MEU_NUMERO = "whatsapp:+5585SEUNUMERO"
 
-# ==============================
-# CACHE DE PREÇO
-# ==============================
-price_cache = {}
-CACHE_TIME = 30
+ALERTA_QUEDA_PERCENTUAL = -4  # alerta se cair mais que -4%
 
-def get_price(symbol):
-    now = time.time()
-
-    if symbol in price_cache:
-        data, timestamp = price_cache[symbol]
-        if now - timestamp < CACHE_TIME:
-            return data
-
+# ================= DADOS CMC =================
+def get_btc_data():
     try:
         url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
         headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
-        params = {"symbol": symbol, "convert": "USD"}
+        params = {"symbol": "BTC", "convert": "USD"}
 
-        response = requests.get(url, headers=headers, params=params, timeout=5)
-        data_json = response.json()["data"][symbol]["quote"]["USD"]
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        data = r.json()["data"]["BTC"]["quote"]["USD"]
 
-        data = {
-            "price": float(data_json["price"]),
-            "change": float(data_json["percent_change_24h"])
+        return {
+            "price": data["price"],
+            "change_24h": data["percent_change_24h"],
+            "volume_24h": data["volume_24h"],
+            "market_cap": data["market_cap"]
         }
-
-        price_cache[symbol] = (data, now)
-        return data
 
     except Exception as e:
         print("Erro CMC:", e)
-        return {"price": 0, "change": 0}
+        return None
 
-# ==============================
-# ALERTA AUTOMÁTICO (queda 5%)
-# ==============================
-def check_market_drop():
-    moedas = ["BTC", "ETH", "SOL", "BNB", "XRP"]
-
-    for symbol in moedas:
-        data = get_price(symbol)
-
-        if data["change"] <= -5:
-            client.messages.create(
-                body=f"📉 ALERTA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
-                from_=twilio_number,
-                to=MEU_NUMERO
-            )
-
-# ==============================
-# LEMBRETE
-# ==============================
-def agendar_lembrete(numero, hora, mensagem):
-    hora_obj = datetime.strptime(hora, "%H:%M")
-
-    scheduler.add_job(
-        enviar_lembrete,
-        'cron',
-        hour=hora_obj.hour,
-        minute=hora_obj.minute,
-        args=[numero, mensagem]
-    )
-
-def enviar_lembrete(numero, mensagem):
-    client.messages.create(
-        body=f"⏰ LEMBRETE:\n{mensagem}",
-        from_=twilio_number,
-        to=numero
-    )
-
-# ==============================
-# IA GROQ (MODELO ATIVO)
-# ==============================
-def ask_groq(question):
+# ================= IA ANALISE =================
+def gerar_analise_trader(dados):
     try:
-        if not groq_api_key:
-            return "GROQ_API_KEY não configurada."
-
         groq_client = Groq(api_key=groq_api_key)
+
+        prompt = f"""
+        Dados atuais do Bitcoin:
+        Preço: {dados['price']}
+        Variação 24h: {dados['change_24h']}%
+        Volume 24h: {dados['volume_24h']}
+        Market Cap: {dados['market_cap']}
+
+        Gere:
+        - Tendência atual
+        - Possível entrada
+        - Stop sugerido
+        - Alvo provável
+        - Grau de risco (baixo, médio, alto)
+        - Breve cenário macro
+        """
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "Você é especialista em criptomoedas. Responda de forma clara e direta."},
-                {"role": "user", "content": question}
+                {"role": "system", "content": "Você é um analista trader profissional."},
+                {"role": "user", "content": prompt}
             ],
-            temperature=0.5,
-            max_tokens=300
+            temperature=0.4,
+            max_tokens=400
         )
 
         return response.choices[0].message.content
 
     except Exception as e:
-        print("ERRO GROQ:", e)
-        return "Erro ao consultar IA."
+        print("Erro GROQ:", e)
+        return "Erro ao gerar análise."
 
-# ==============================
-# SCHEDULER
-# ==============================
+# ================= RELATORIO DIARIO =================
+def enviar_relatorio_diario():
+    dados = get_btc_data()
+    if not dados:
+        return
+
+    analise = gerar_analise_trader(dados)
+
+    mensagem = f"""
+📊 RELATÓRIO TRADER PRO - BTC
+
+Preço: ${dados['price']:,.2f}
+24h: {dados['change_24h']:.2f}%
+
+{analise}
+"""
+
+    client.messages.create(
+        body=mensagem,
+        from_=twilio_number,
+        to=MEU_NUMERO
+    )
+
+# ================= ALERTA QUEDA =================
+def verificar_queda():
+    dados = get_btc_data()
+    if not dados:
+        return
+
+    if dados["change_24h"] <= ALERTA_QUEDA_PERCENTUAL:
+        client.messages.create(
+            body=f"🚨 ALERTA BTC\nQueda de {dados['change_24h']:.2f}% nas últimas 24h!",
+            from_=twilio_number,
+            to=MEU_NUMERO
+        )
+
+# ================= SCHEDULER =================
 scheduler = BackgroundScheduler()
-scheduler.add_job(check_market_drop, "interval", minutes=10)
+
+scheduler.add_job(enviar_relatorio_diario, "cron", hour=8, minute=0)
+scheduler.add_job(verificar_queda, "interval", minutes=15)
+
 scheduler.start()
 
-# ==============================
-# WEBHOOK
-# ==============================
+# ================= WEBHOOK =================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    incoming_msg = request.form.get("Body", "")
-    sender = request.form.get("From")
-
+    incoming_msg = request.form.get("Body", "").lower().strip()
     resp = MessagingResponse()
-    msg = incoming_msg.lower().strip()
 
-    moedas_map = {
-        "btc": "BTC",
-        "bitcoin": "BTC",
-        "eth": "ETH",
-        "ethereum": "ETH",
-        "sol": "SOL",
-        "solana": "SOL",
-        "bnb": "BNB",
-        "xrp": "XRP"
-    }
-
-    # LEMBRETE
-    if msg.startswith("lembrete"):
-        try:
-            partes = msg.split(" ", 2)
-            hora = partes[1]
-            mensagem = partes[2]
-            agendar_lembrete(sender, hora, mensagem)
-            resp.message("⏰ Lembrete agendado!")
-        except:
-            resp.message("Use: lembrete 21:00 estudar cripto")
+    if "valor btc" in incoming_msg or incoming_msg == "btc":
+        dados = get_btc_data()
+        resp.message(
+            f"💰 BTC\nPreço: ${dados['price']:,.2f}\n24h: {dados['change_24h']:.2f}%"
+        )
         return str(resp)
 
-    palavras = msg.split()
+    if "analise" in incoming_msg:
+        dados = get_btc_data()
+        analise = gerar_analise_trader(dados)
+        resp.message(analise)
+        return str(resp)
 
-    # CONSULTA DE PREÇO (mensagem curta)
-    if len(palavras) <= 2:
-        for palavra, simbolo in moedas_map.items():
-            if palavra in msg:
-                data = get_price(simbolo)
-
-                resp.message(
-                    f"💰 {simbolo}\n"
-                    f"Preço: ${data['price']:,.2f}\n"
-                    f"24h: {data['change']:.2f}%"
-                )
-                return str(resp)
-
-    # IA GROQ
-    resposta = ask_groq(incoming_msg)
-    resp.message(resposta)
+    resp.message("ZapID Trader PRO ativo 🚀")
     return str(resp)
 
-# ==============================
-# HOME
-# ==============================
-@app.route("/", methods=["GET"])
+# ================= HOME =================
+@app.route("/")
 def home():
-    return "ZapID GROQ ATIVO 🚀", 200
+    return "ZapID Trader PRO ONLINE 🚀", 200
 
-# ==============================
-# START
-# ==============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
