@@ -6,6 +6,7 @@ import os
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
+from groq import Groq
 
 app = Flask(__name__)
 
@@ -16,21 +17,29 @@ account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
 twilio_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
 cmc_api_key = os.environ.get("CMC_API_KEY")
+groq_api_key = os.environ.get("GROQ_API_KEY")
 
 client = Client(account_sid, auth_token)
 
+# ==============================
+# GROQ CLIENT
+# ==============================
+if groq_api_key:
+    groq_client = Groq(api_key=groq_api_key)
+else:
+    groq_client = None
+
+# ==============================
 # COLOQUE SEU NÚMERO AQUI
+# ==============================
 MEU_NUMERO = "whatsapp:+5585SEUNUMEROAQUI"
 
 # ==============================
 # CACHE DE PREÇO
 # ==============================
 price_cache = {}
-CACHE_TIME = 30  # segundos
+CACHE_TIME = 30
 
-# ==============================
-# BUSCAR PREÇO NA CMC
-# ==============================
 def get_price(symbol):
     now = time.time()
 
@@ -59,7 +68,7 @@ def get_price(symbol):
         return {"price": 0, "change": 0}
 
 # ==============================
-# ALERTA DE QUEDA AUTOMÁTICO
+# ALERTA DE QUEDA
 # ==============================
 def check_market_drop():
     moedas = ["BTC", "ETH", "SOL", "BNB", "XRP"]
@@ -69,7 +78,7 @@ def check_market_drop():
 
         if data["change"] <= -5:
             client.messages.create(
-                body=f"📉 ALERTA DE QUEDA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
+                body=f"📉 ALERTA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
                 from_=twilio_number,
                 to=MEU_NUMERO
             )
@@ -94,6 +103,30 @@ def enviar_lembrete(numero, mensagem):
         from_=twilio_number,
         to=numero
     )
+
+# ==============================
+# GROQ IA
+# ==============================
+def ask_groq(question):
+    if not groq_client:
+        return "IA não configurada."
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[
+                {"role": "system", "content": "Você é especialista em criptomoedas. Responda de forma clara e direta."},
+                {"role": "user", "content": question}
+            ],
+            temperature=0.5,
+            max_tokens=300
+        )
+
+        return completion.choices[0].message.content
+
+    except Exception as e:
+        print("Erro GROQ:", e)
+        return "Erro ao consultar IA."
 
 # ==============================
 # SCHEDULER
@@ -124,7 +157,7 @@ def webhook():
         "xrp": "XRP"
     }
 
-    # DETECTAR MOEDA EM FRASE
+    # DETECTAR MOEDA
     for palavra, simbolo in moedas_map.items():
         if palavra in msg:
             data = get_price(simbolo)
@@ -148,15 +181,9 @@ def webhook():
             resp.message("Use: lembrete 21:00 estudar cripto")
         return str(resp)
 
-    resp.message(
-        "📊 ZapID Monitor\n\n"
-        "Exemplos:\n"
-        "valor btc\n"
-        "preço do ethereum\n"
-        "quanto vale solana\n"
-        "lembrete 21:00 estudar cripto"
-    )
-
+    # IA GROQ
+    resposta = ask_groq(incoming_msg)
+    resp.message(resposta)
     return str(resp)
 
 # ==============================
@@ -164,7 +191,7 @@ def webhook():
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
-    return "ZapID MONITOR ATIVO 🚀", 200
+    return "ZapID GROQ IA ATIVA 🚀", 200
 
 # ==============================
 # START
