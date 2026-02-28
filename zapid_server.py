@@ -4,14 +4,13 @@ from twilio.rest import Client
 import requests
 import os
 import time
-import re
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 
 app = Flask(__name__)
 
 # ==============================
-# CONFIG
+# CONFIGURAÇÕES
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -20,19 +19,17 @@ cmc_api_key = os.environ.get("CMC_API_KEY")
 
 client = Client(account_sid, auth_token)
 
-# ==============================
 # COLOQUE SEU NÚMERO AQUI
-# ==============================
 MEU_NUMERO = "whatsapp:+5585SEUNUMEROAQUI"
 
 # ==============================
-# CACHE
+# CACHE DE PREÇO
 # ==============================
 price_cache = {}
-CACHE_TIME = 30
+CACHE_TIME = 30  # segundos
 
 # ==============================
-# FUNÇÃO PREÇO
+# BUSCAR PREÇO NA CMC
 # ==============================
 def get_price(symbol):
     now = time.time()
@@ -62,7 +59,7 @@ def get_price(symbol):
         return {"price": 0, "change": 0}
 
 # ==============================
-# ALERTA DE QUEDA (-5%)
+# ALERTA DE QUEDA AUTOMÁTICO
 # ==============================
 def check_market_drop():
     moedas = ["BTC", "ETH", "SOL", "BNB", "XRP"]
@@ -72,13 +69,13 @@ def check_market_drop():
 
         if data["change"] <= -5:
             client.messages.create(
-                body=f"📉 ALERTA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
+                body=f"📉 ALERTA DE QUEDA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
                 from_=twilio_number,
                 to=MEU_NUMERO
             )
 
 # ==============================
-# LEMBRETES
+# LEMBRETE
 # ==============================
 def agendar_lembrete(numero, hora, mensagem):
     hora_obj = datetime.strptime(hora, "%H:%M")
@@ -106,12 +103,8 @@ scheduler.add_job(check_market_drop, "interval", minutes=10)
 scheduler.start()
 
 # ==============================
-# ROTAS
+# WEBHOOK
 # ==============================
-@app.route("/", methods=["GET"])
-def home():
-    return "ZapID MONITOR ATIVO 🚀", 200
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.form.get("Body", "")
@@ -120,17 +113,28 @@ def webhook():
     resp = MessagingResponse()
     msg = incoming_msg.lower().strip()
 
-    # CONSULTA PREÇO
-    if msg in ["btc", "eth", "sol", "bnb", "xrp"]:
-        symbol = msg.upper()
-        data = get_price(symbol)
+    moedas_map = {
+        "btc": "BTC",
+        "bitcoin": "BTC",
+        "eth": "ETH",
+        "ethereum": "ETH",
+        "sol": "SOL",
+        "solana": "SOL",
+        "bnb": "BNB",
+        "xrp": "XRP"
+    }
 
-        resp.message(
-            f"💰 {symbol}\n"
-            f"Preço: ${data['price']:,.2f}\n"
-            f"24h: {data['change']:.2f}%"
-        )
-        return str(resp)
+    # DETECTAR MOEDA EM FRASE
+    for palavra, simbolo in moedas_map.items():
+        if palavra in msg:
+            data = get_price(simbolo)
+
+            resp.message(
+                f"💰 {simbolo}\n"
+                f"Preço: ${data['price']:,.2f}\n"
+                f"24h: {data['change']:.2f}%"
+            )
+            return str(resp)
 
     # LEMBRETE
     if msg.startswith("lembrete"):
@@ -146,12 +150,21 @@ def webhook():
 
     resp.message(
         "📊 ZapID Monitor\n\n"
-        "Digite:\n"
-        "btc / eth / sol / bnb / xrp\n"
+        "Exemplos:\n"
+        "valor btc\n"
+        "preço do ethereum\n"
+        "quanto vale solana\n"
         "lembrete 21:00 estudar cripto"
     )
 
     return str(resp)
+
+# ==============================
+# HOME
+# ==============================
+@app.route("/", methods=["GET"])
+def home():
+    return "ZapID MONITOR ATIVO 🚀", 200
 
 # ==============================
 # START
