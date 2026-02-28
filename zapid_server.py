@@ -6,10 +6,8 @@ import os
 import time
 import re
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
-# ==============================
-# CONFIGURAÇÃO OPENAI SEGURA
-# ==============================
 try:
     from openai import OpenAI
 except:
@@ -18,7 +16,7 @@ except:
 app = Flask(__name__)
 
 # ==============================
-# VARIÁVEIS DE AMBIENTE
+# CONFIG
 # ==============================
 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -29,24 +27,26 @@ openai_api_key = os.environ.get("OPENAI_API_KEY")
 client = Client(account_sid, auth_token)
 
 # ==============================
-# INICIALIZA GPT (SEM QUEBRAR)
+# DEFINA SEU NÚMERO VIP FIXO
+# ==============================
+MEU_NUMERO = "whatsapp:+55SEUNUMEROAQUI"
+
+# ==============================
+# GPT (OPCIONAL)
 # ==============================
 if OpenAI and openai_api_key:
     gpt = OpenAI()
 else:
     gpt = None
-    print("⚠ GPT não configurado.")
 
 # ==============================
-# CONTROLE
+# CACHE
 # ==============================
-vip_users = []
-alerts = {}
 price_cache = {}
 CACHE_TIME = 20
 
 # ==============================
-# FUNÇÃO PREÇO (CoinMarketCap)
+# PREÇO CMC
 # ==============================
 def get_price(symbol):
     now = time.time()
@@ -63,10 +63,6 @@ def get_price(symbol):
 
         response = requests.get(url, headers=headers, params=params, timeout=5)
 
-        if response.status_code != 200:
-            print("Erro CMC:", response.text)
-            return {"price": 0, "change": 0}
-
         data_json = response.json()["data"][symbol]["quote"]["USD"]
 
         data = {
@@ -77,71 +73,57 @@ def get_price(symbol):
         price_cache[symbol] = (data, now)
         return data
 
-    except Exception as e:
-        print("Erro CMC:", e)
+    except:
         return {"price": 0, "change": 0}
 
 # ==============================
-# FUNÇÃO GPT
+# ALERTA DE QUEDA GLOBAL
 # ==============================
-def ask_gpt(question):
-    if not gpt:
-        return "🤖 IA não configurada no servidor."
+def check_market_drop():
+    if not MEU_NUMERO:
+        return
 
-    try:
-        response = gpt.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Você é especialista em criptomoedas. Responda de forma clara e objetiva."},
-                {"role": "user", "content": question}
-            ],
-            max_tokens=300
-        )
+    moedas = ["BTC", "ETH", "SOL", "BNB", "XRP"]
 
-        return response.choices[0].message.content
-
-    except Exception as e:
-        print("Erro GPT:", e)
-        return "Erro ao consultar IA."
+    for symbol in moedas:
+        data = get_price(symbol)
+        if data["change"] <= -5:
+            client.messages.create(
+                body=f"📉 ALERTA DE QUEDA!\n{symbol} caiu {data['change']:.2f}%\nPreço: ${data['price']:,.2f}",
+                from_=twilio_number,
+                to=MEU_NUMERO
+            )
 
 # ==============================
-# ALERTAS
+# LEMBRETES
 # ==============================
-def send_alert(user, symbol, current):
-    client.messages.create(
-        body=f"🚨 ALERTA {symbol}!\nPreço atual: ${current:,.2f}",
-        from_=twilio_number,
-        to=user
+def agendar_lembrete(numero, hora, mensagem):
+    hora_obj = datetime.strptime(hora, "%H:%M")
+    scheduler.add_job(
+        enviar_lembrete,
+        'cron',
+        hour=hora_obj.hour,
+        minute=hora_obj.minute,
+        args=[numero, mensagem]
     )
 
-def check_alerts():
-    try:
-        for user, user_alerts in list(alerts.items()):
-            for alert in user_alerts[:]:
-                current = get_price(alert["symbol"])["price"]
+def enviar_lembrete(numero, mensagem):
+    client.messages.create(
+        body=f"⏰ LEMBRETE:\n{mensagem}",
+        from_=twilio_number,
+        to=numero
+    )
 
-                if alert["type"] == "above" and current >= alert["target"]:
-                    send_alert(user, alert["symbol"], current)
-                    user_alerts.remove(alert)
-
-            if not user_alerts:
-                del alerts[user]
-
-    except Exception as e:
-        print("Erro scheduler:", e)
-
+# ==============================
+# SCHEDULER
+# ==============================
 scheduler = BackgroundScheduler()
-scheduler.add_job(check_alerts, "interval", seconds=30)
+scheduler.add_job(check_market_drop, "interval", minutes=10)
 scheduler.start()
 
 # ==============================
-# ROTAS
+# WEBHOOK
 # ==============================
-@app.route("/", methods=["GET"])
-def home():
-    return "ZapID Market 5.1 ONLINE 🚀", 200
-
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.form.get("Body", "")
@@ -150,38 +132,60 @@ def webhook():
     resp = MessagingResponse()
     msg = incoming_msg.lower().strip()
 
-    coins = {
-        "btc": "BTC",
-        "eth": "ETH",
-        "sol": "SOL"
-    }
-
     # ==========================
     # CONSULTA PREÇO
     # ==========================
-    for key in coins:
-        if key in msg:
-            symbol = coins[key]
-            data = get_price(symbol)
+    if msg in ["btc", "eth", "sol", "bnb", "xrp"]:
+        symbol = msg.upper()
+        data = get_price(symbol)
 
-            if data["price"] == 0:
-                resp.message("Erro ao consultar preço.")
-                return str(resp)
-
-            resp.message(
-                f"💰 {symbol}\n"
-                f"Preço: ${data['price']:,.2f}\n"
-                f"24h: {data['change']:.2f}%"
-            )
-            return str(resp)
+        resp.message(
+            f"💰 {symbol}\n"
+            f"Preço: ${data['price']:,.2f}\n"
+            f"24h: {data['change']:.2f}%"
+        )
+        return str(resp)
 
     # ==========================
-    # FALLBACK PARA IA
+    # LEMBRETE
     # ==========================
-    ai_response = ask_gpt(incoming_msg)
-    resp.message(ai_response)
+    if msg.startswith("lembrete"):
+        try:
+            partes = msg.split(" ", 2)
+            hora = partes[1]
+            mensagem = partes[2]
+            agendar_lembrete(sender, hora, mensagem)
+            resp.message("⏰ Lembrete agendado!")
+        except:
+            resp.message("Use: lembrete 21:00 estudar cripto")
+
+        return str(resp)
+
+    # ==========================
+    # IA (OPCIONAL)
+    # ==========================
+    if gpt:
+        resposta = gpt.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Especialista em criptomoedas."},
+                {"role": "user", "content": incoming_msg}
+            ],
+            max_tokens=200
+        )
+
+        resp.message(resposta.choices[0].message.content)
+    else:
+        resp.message("Comando não reconhecido.")
 
     return str(resp)
+
+# ==============================
+# HOME
+# ==============================
+@app.route("/", methods=["GET"])
+def home():
+    return "ZapID VIP MONITOR ATIVO 🚀", 200
 
 # ==============================
 # START
