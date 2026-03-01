@@ -1,9 +1,11 @@
 import os
 import requests
+import json
+from datetime import datetime
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client
 from groq import Groq
-import tweepy
 
 app = Flask(__name__)
 
@@ -13,11 +15,29 @@ app = Flask(__name__)
 
 groq_api_key = os.getenv("GROQ_API_KEY")
 cmc_api_key = os.getenv("CMC_API_KEY")
+news_api_key = os.getenv("NEWS_API_KEY")
 
-X_API_KEY = os.getenv("X_API_KEY")
-X_API_SECRET = os.getenv("X_API_SECRET")
-X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN")
-X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET")
+twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+twilio_whatsapp = os.getenv("TWILIO_WHATSAPP_NUMBER")
+meu_whatsapp = os.getenv("MY_WHATSAPP_NUMBER")
+
+# =========================
+# 📁 CONTROLE DE ESTADO
+# =========================
+
+STATE_FILE = "sent_news.json"
+
+def load_sent_news():
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"sent_ids": []}
+
+def save_sent_news(data):
+    with open(STATE_FILE, "w") as f:
+        json.dump(data, f)
 
 # =========================
 # 🟢 STATUS
@@ -25,7 +45,7 @@ X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET")
 
 @app.route("/")
 def home():
-    return "ZapID Máquina de Conteúdo Online 🚀"
+    return "ZapID Radar Online 🚀"
 
 # =========================
 # 💰 BTC REAL TIME
@@ -47,105 +67,106 @@ def get_btc_price():
 # =========================
 
 def ask_groq(prompt):
-    try:
-        client = Groq(api_key=groq_api_key)
+    client = Groq(api_key=groq_api_key)
 
-        chat = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Você é um analista profissional de mercado, especialista em cripto, macroeconomia e geopolítica. Gere conteúdo estratégico para Twitter."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            model="llama-3.1-8b-instant",
-            temperature=0.6,
-            max_tokens=700
-        )
+    chat = client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": "Você é um analista profissional de mercado, especialista em cripto, macroeconomia e geopolítica. Gere posts estratégicos de até 280 caracteres para Twitter."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        model="llama-3.1-8b-instant",
+        temperature=0.6,
+        max_tokens=300
+    )
 
-        return chat.choices[0].message.content
-
-    except Exception as e:
-        print("Erro GROQ:", e)
-        return "Erro ao consultar IA."
+    return chat.choices[0].message.content
 
 # =========================
-# 🐦 POSTAR NO X
+# 📰 BUSCAR NOTÍCIA
 # =========================
 
-def post_on_x(text):
-    try:
-        client = tweepy.Client(
-            consumer_key=X_API_KEY,
-            consumer_secret=X_API_SECRET,
-            access_token=X_ACCESS_TOKEN,
-            access_token_secret=X_ACCESS_TOKEN_SECRET
-        )
+def get_latest_news():
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "bitcoin OR crypto OR macroeconomy OR federal reserve OR geopolitics",
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 5,
+        "apiKey": news_api_key
+    }
 
-        client.create_tweet(text=text)
-        return "Postado com sucesso no X 🚀"
+    response = requests.get(url, params=params)
+    articles = response.json().get("articles", [])
 
-    except Exception as e:
-        print("Erro X:", e)
-        return "Erro ao postar no X."
+    if not articles:
+        return None
+
+    first = articles[0]
+
+    return {
+        "id": first["url"],
+        "title": first["title"],
+        "description": first["description"]
+    }
 
 # =========================
-# 🧠 PROCESSAR MENSAGEM
+# 📲 ENVIAR WHATSAPP DIRETO
 # =========================
 
-def process_message(msg):
+def send_whatsapp(message):
+    client = Client(twilio_sid, twilio_token)
 
-    msg_lower = msg.lower()
+    client.messages.create(
+        body=message,
+        from_=f"whatsapp:{twilio_whatsapp}",
+        to=f"whatsapp:{meu_whatsapp}"
+    )
 
-    # 💰 BTC
-    if "btc agora" in msg_lower or "valor btc" in msg_lower:
-        price = get_btc_price()
-        return f"💰 BTC agora: ${price}"
+# =========================
+# 🚨 RADAR AUTOMÁTICO
+# =========================
 
-    # 🐦 Postar manual
-    if msg_lower.startswith("poste:"):
-        content = msg.replace("poste:", "").strip()
-        return post_on_x(content)
+@app.route("/radar")
+def radar():
 
-    # 📊 3 posts do dia
-    if "posts do dia" in msg_lower:
+    news = get_latest_news()
 
-        prompt = """
-        Gere 3 posts prontos para Twitter:
+    if not news:
+        return "Sem notícias relevantes."
 
-        1 sobre Bitcoin
-        1 sobre economia global
-        1 sobre geopolítica ou macro
+    state = load_sent_news()
 
-        Cada post deve conter:
-        - Título forte em CAIXA ALTA
-        - Resumo estratégico curto (máx 4 linhas)
-        - Hashtags relevantes
-        - Linguagem profissional e impactante
-        """
+    if news["id"] in state["sent_ids"]:
+        return "Notícia já enviada."
 
-        return ask_groq(prompt)
+    prompt = f"""
+    Baseado na notícia abaixo, gere um post de até 280 caracteres.
 
-    # 📰 Post específico
-    if msg_lower.startswith("post "):
-        tema = msg_lower.replace("post ", "")
-        prompt = f"""
-        Gere um post profissional para Twitter sobre {tema}.
+    Estrutura obrigatória:
+    🚨 ALERTA ZAPID
+    Resumo estratégico objetivo
+    Hashtags relevantes
 
-        Inclua:
-        - Título forte em CAIXA ALTA
-        - Resumo estratégico
-        - Hashtags relevantes
-        - Linguagem de autoridade
-        """
+    Título: {news['title']}
+    Descrição: {news['description']}
+    """
 
-        return ask_groq(prompt)
+    post = ask_groq(prompt)
 
-    # 🤖 Pergunta geral
-    return ask_groq(msg)
+    post = post[:280]
+
+    send_whatsapp(post)
+
+    state["sent_ids"].append(news["id"])
+    save_sent_news(state)
+
+    return "Radar executado com sucesso."
 
 # =========================
 # 📲 WEBHOOK TWILIO
@@ -155,8 +176,13 @@ def process_message(msg):
 def webhook():
 
     incoming_msg = request.form.get("Body")
+    msg_lower = incoming_msg.lower()
 
-    resposta = process_message(incoming_msg)
+    if "btc agora" in msg_lower:
+        price = get_btc_price()
+        resposta = f"💰 BTC agora: ${price}"
+    else:
+        resposta = ask_groq(incoming_msg)
 
     twilio_response = MessagingResponse()
     twilio_response.message(resposta)
