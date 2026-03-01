@@ -2,10 +2,8 @@
 flask
 twilio
 requests
-apscheduler
-gunicorn
 groq
 tweepy
-requests
-apscheduler
+gunicorn
+
 
