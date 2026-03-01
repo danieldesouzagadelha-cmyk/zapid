@@ -1,115 +1,115 @@
-from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
-import requests
+from flask import Flask
 import os
-from groq import Groq
+import requests
+import tweepy
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
-cmc_api_key = os.environ.get("CMC_API_KEY")
-groq_api_key = os.environ.get("GROQ_API_KEY")
+# ================== ENV ==================
+CMC_API_KEY = os.environ.get("CMC_API_KEY")
 
-# ================= BUSCAR DADOS BTC =================
-def get_btc_data():
+X_CONSUMER_KEY = os.environ.get("X_CONSUMER_KEY")
+X_CONSUMER_SECRET = os.environ.get("X_CONSUMER_SECRET")
+X_ACCESS_TOKEN = os.environ.get("X_ACCESS_TOKEN")
+X_ACCESS_TOKEN_SECRET = os.environ.get("X_ACCESS_TOKEN_SECRET")
+
+# ================== TWITTER AUTH ==================
+auth = tweepy.OAuth1UserHandler(
+    X_CONSUMER_KEY,
+    X_CONSUMER_SECRET,
+    X_ACCESS_TOKEN,
+    X_ACCESS_TOKEN_SECRET
+)
+
+twitter = tweepy.API(auth)
+
+# ================== FUNÇÕES ==================
+
+def get_btc():
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"symbol": "BTC", "convert": "USD"}
+
+    r = requests.get(url, headers=headers, params=params)
+    data = r.json()["data"]["BTC"]["quote"]["USD"]
+
+    return data["price"], data["percent_change_24h"]
+
+
+def post_btc_report():
     try:
-        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-        headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
-        params = {"symbol": "BTC", "convert": "USD"}
+        price, change = get_btc()
 
-        r = requests.get(url, headers=headers, params=params, timeout=8)
-        data = r.json()["data"]["BTC"]["quote"]["USD"]
+        tweet = f"""
+📊 BTC Daily Report
 
-        return {
-            "price": data["price"],
-            "change_24h": data["percent_change_24h"],
-            "volume_24h": data["volume_24h"],
-            "market_cap": data["market_cap"]
-        }
+💰 Price: ${price:,.2f}
+📉 24h Change: {change:.2f}%
 
-    except Exception as e:
-        print("Erro CMC:", e)
-        return None
-
-# ================= IA ANALISE =================
-def gerar_analise_trader(dados):
-    try:
-        if not groq_api_key:
-            return "GROQ_API_KEY não configurada."
-
-        groq_client = Groq(api_key=groq_api_key)
-
-        prompt = f"""
-        Dados atuais do Bitcoin:
-        Preço: {dados['price']}
-        Variação 24h: {dados['change_24h']}%
-        Volume 24h: {dados['volume_24h']}
-        Market Cap: {dados['market_cap']}
-
-        Gere uma análise trader profissional contendo:
-        - Tendência
-        - Possível entrada
-        - Stop sugerido
-        - Alvo provável
-        - Grau de risco
+#Bitcoin #Crypto
         """
 
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": "Você é um trader profissional de criptomoedas."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4,
-            max_tokens=300
-        )
-
-        return response.choices[0].message.content
+        twitter.update_status(tweet)
+        print("BTC report posted")
 
     except Exception as e:
-        print("Erro GROQ:", e)
-        return "Erro ao gerar análise."
+        print("Erro BTC:", e)
 
-# ================= WEBHOOK =================
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    incoming_msg = request.form.get("Body", "").lower().strip()
-    resp = MessagingResponse()
 
-    # 🔹 PREÇO BTC
-    if "btc" in incoming_msg and "valor" in incoming_msg or incoming_msg == "btc":
-        dados = get_btc_data()
-        if not dados:
-            resp.message("Erro ao buscar dados do BTC.")
-            return str(resp)
+def post_economy_news():
+    try:
+        tweet = """
+🌍 Global Economy Update
 
-        resp.message(
-            f"💰 BTC\n"
-            f"Preço: ${dados['price']:,.2f}\n"
-            f"24h: {dados['change_24h']:.2f}%"
-        )
-        return str(resp)
+Markets remain sensitive to inflation data and interest rate expectations.
 
-    # 🔹 ANALISE FLEXIVEL
-    if any(p in incoming_msg for p in [
-        "analise", "análise", "analize", "entrada", "trade", "trader"
-    ]):
-        dados = get_btc_data()
-        if not dados:
-            resp.message("Erro ao buscar dados do BTC.")
-            return str(resp)
+Stay alert to macro volatility.
 
-        analise = gerar_analise_trader(dados)
-        resp.message(analise)
-        return str(resp)
+#Economy #Markets
+        """
 
-    resp.message("ZapID Trader PRO está online 🚀")
-    return str(resp)
+        twitter.update_status(tweet)
+        print("Economy news posted")
 
-# ================= HOME =================
+    except Exception as e:
+        print("Erro Economy:", e)
+
+
+def post_geopolitics():
+    try:
+        tweet = """
+🌐 Geopolitical Watch
+
+Ongoing global tensions continue impacting energy and commodity markets.
+
+Macro risk remains elevated.
+
+#Geopolitics #GlobalMarkets
+        """
+
+        twitter.update_status(tweet)
+        print("Geopolitics posted")
+
+    except Exception as e:
+        print("Erro Geopolitics:", e)
+
+# ================== SCHEDULER ==================
+
+scheduler = BackgroundScheduler()
+
+scheduler.add_job(post_btc_report, "cron", hour=8, minute=0)
+scheduler.add_job(post_economy_news, "cron", hour=14, minute=0)
+scheduler.add_job(post_geopolitics, "cron", hour=20, minute=0)
+
+scheduler.start()
+
+# ================== SERVER ==================
+
 @app.route("/")
 def home():
-    return "ZapID Trader PRO STABLE 🚀", 200
+    return "ZapID Content Machine ONLINE 🚀", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
