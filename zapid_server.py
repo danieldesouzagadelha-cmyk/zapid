@@ -1,13 +1,15 @@
 import os
 import requests
 import json
-from datetime import datetime
+import logging
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
 
 app = Flask(__name__)
+
+logging.basicConfig(level=logging.INFO)
 
 # =========================
 # 🔐 VARIÁVEIS DE AMBIENTE
@@ -52,81 +54,108 @@ def home():
 # =========================
 
 def get_btc_price():
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-    headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
-    params = {"symbol": "BTC", "convert": "USD"}
+    try:
+        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+        headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
+        params = {"symbol": "BTC", "convert": "USD"}
 
-    response = requests.get(url, headers=headers, params=params)
-    data = response.json()
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        data = response.json()
 
-    price = data["data"]["BTC"]["quote"]["USD"]["price"]
-    return round(price, 2)
+        price = data["data"]["BTC"]["quote"]["USD"]["price"]
+        return round(price, 2)
+
+    except Exception as e:
+        logging.error(f"Erro ao buscar BTC: {e}")
+        return None
 
 # =========================
 # 🤖 GROQ IA
 # =========================
 
 def ask_groq(prompt):
-    client = Groq(api_key=groq_api_key)
+    try:
+        client = Groq(api_key=groq_api_key)
 
-    chat = client.chat.completions.create(
-        messages=[
-            {
-                "role": "system",
-                "content": "Você é um analista profissional de mercado, especialista em cripto, macroeconomia e geopolítica. Gere posts estratégicos de até 280 caracteres para Twitter."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        model="llama-3.1-8b-instant",
-        temperature=0.6,
-        max_tokens=300
-    )
+        chat = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Você é um analista profissional de mercado, especialista em cripto, macroeconomia e geopolítica. Gere posts estratégicos de até 280 caracteres para Twitter."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            model="llama-3.1-8b-instant",
+            temperature=0.6,
+            max_tokens=300
+        )
 
-    return chat.choices[0].message.content
+        return chat.choices[0].message.content
+
+    except Exception as e:
+        logging.error(f"Erro no Groq: {e}")
+        return None
 
 # =========================
 # 📰 BUSCAR NOTÍCIA
 # =========================
 
 def get_latest_news():
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        "q": "bitcoin OR crypto OR macroeconomy OR federal reserve OR geopolitics",
-        "language": "en",
-        "sortBy": "publishedAt",
-        "pageSize": 5,
-        "apiKey": news_api_key
-    }
+    try:
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": "bitcoin OR crypto OR macroeconomy OR federal reserve OR geopolitics",
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": 5,
+            "apiKey": news_api_key
+        }
 
-    response = requests.get(url, params=params)
-    articles = response.json().get("articles", [])
+        response = requests.get(url, params=params, timeout=10)
+        articles = response.json().get("articles", [])
 
-    if not articles:
+        if not articles:
+            return None
+
+        state = load_sent_news()
+
+        for article in articles:
+            if article["url"] not in state["sent_ids"]:
+                return {
+                    "id": article["url"],
+                    "title": article["title"] or "",
+                    "description": article["description"] or ""
+                }
+
         return None
 
-    first = articles[0]
-
-    return {
-        "id": first["url"],
-        "title": first["title"],
-        "description": first["description"]
-    }
+    except Exception as e:
+        logging.error(f"Erro ao buscar notícia: {e}")
+        return None
 
 # =========================
-# 📲 ENVIAR WHATSAPP DIRETO
+# 📲 ENVIAR WHATSAPP
 # =========================
 
 def send_whatsapp(message):
-    client = Client(twilio_sid, twilio_token)
+    try:
+        client = Client(twilio_sid, twilio_token)
 
-    client.messages.create(
-        body=message,
-        from_=f"whatsapp:{twilio_whatsapp}",
-        to=f"whatsapp:{meu_whatsapp}"
-    )
+        msg = client.messages.create(
+            body=message,
+            from_=f"whatsapp:{twilio_whatsapp}",
+            to=f"whatsapp:{meu_whatsapp}"
+        )
+
+        logging.info(f"Mensagem enviada com SID: {msg.sid}")
+        return True
+
+    except Exception as e:
+        logging.error(f"Erro ao enviar WhatsApp: {e}")
+        return False
 
 # =========================
 # 🚨 RADAR AUTOMÁTICO
@@ -138,31 +167,35 @@ def radar():
     news = get_latest_news()
 
     if not news:
-        return "Sem notícias relevantes."
-
-    state = load_sent_news()
-
-    if news["id"] in state["sent_ids"]:
-        return "Notícia já enviada."
+        return "Sem notícias novas disponíveis."
 
     prompt = f"""
-    Baseado na notícia abaixo, gere um post de até 280 caracteres.
+Baseado na notícia abaixo, gere um post de até 280 caracteres.
 
-    Estrutura obrigatória:
-    🚨 ALERTA ZAPID
-    Resumo estratégico objetivo
-    Hashtags relevantes
+Estrutura obrigatória:
+🚨 ALERTA ZAPID
+Resumo estratégico objetivo
+Hashtags relevantes
 
-    Título: {news['title']}
-    Descrição: {news['description']}
-    """
+Título: {news['title']}
+Descrição: {news['description']}
+"""
 
     post = ask_groq(prompt)
 
+    if not post:
+        return "Erro ao gerar post com IA."
+
     post = post[:280]
 
-    send_whatsapp(post)
+    logging.info(f"Post gerado: {post}")
 
+    success = send_whatsapp(post)
+
+    if not success:
+        return "Erro ao enviar mensagem pelo Twilio."
+
+    state = load_sent_news()
     state["sent_ids"].append(news["id"])
     save_sent_news(state)
 
@@ -175,14 +208,17 @@ def radar():
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    incoming_msg = request.form.get("Body")
+    incoming_msg = request.form.get("Body", "")
     msg_lower = incoming_msg.lower()
 
     if "btc agora" in msg_lower:
         price = get_btc_price()
-        resposta = f"💰 BTC agora: ${price}"
+        if price:
+            resposta = f"💰 BTC agora: ${price}"
+        else:
+            resposta = "Erro ao buscar preço do BTC."
     else:
-        resposta = ask_groq(incoming_msg)
+        resposta = ask_groq(incoming_msg) or "Erro ao processar mensagem."
 
     twilio_response = MessagingResponse()
     twilio_response.message(resposta)
