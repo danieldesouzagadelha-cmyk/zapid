@@ -2,15 +2,12 @@ import os
 import requests
 import json
 import logging
+from datetime import datetime
 from flask import Flask
 from groq import Groq
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-
-# =========================
-# 🔐 VARIÁVEIS
-# =========================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -20,7 +17,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 STATE_FILE = "sent_news.json"
 
 # =========================
-# 📁 CONTROLE DE ESTADO
+# CONTROLE DE ESTADO
 # =========================
 
 def load_sent_news():
@@ -35,43 +32,37 @@ def save_sent_news(data):
         json.dump(data, f)
 
 # =========================
-# 📲 TELEGRAM
+# TELEGRAM
 # =========================
 
 def send_telegram(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
 
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
+    response = requests.post(url, data=payload)
 
-        response = requests.post(url, data=payload)
-
-        if response.status_code == 200:
-            logging.info("Mensagem enviada no Telegram")
-            return True
-        else:
-            logging.error(response.text)
-            return False
-
-    except Exception as e:
-        logging.error(f"Erro Telegram: {e}")
+    if response.status_code == 200:
+        logging.info("Mensagem enviada")
+        return True
+    else:
+        logging.error(response.text)
         return False
 
 # =========================
-# 📰 BUSCAR NOTÍCIAS
+# BUSCAR NOTÍCIAS DE HOJE
 # =========================
 
-def get_news():
+def get_today_news():
     try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+
         query = """
         bitcoin OR cryptocurrency OR ethereum OR
-        economy OR inflation OR federal reserve OR
-        government OR politics OR
-        war OR geopolitics OR global conflict
+        inflation OR economy OR federal reserve OR
+        geopolitics OR war OR government
         """
 
         url = "https://newsapi.org/v2/everything"
@@ -80,26 +71,32 @@ def get_news():
             "q": query,
             "language": "en",
             "sortBy": "publishedAt",
-            "pageSize": 10,
+            "pageSize": 20,
             "apiKey": NEWS_API_KEY
         }
 
         response = requests.get(url, params=params, timeout=10)
         articles = response.json().get("articles", [])
 
-        if not articles:
-            return None
-
         state = load_sent_news()
 
         for article in articles:
-            if article["url"] not in state["sent_ids"]:
-                return {
-                    "id": article["url"],
-                    "title": article["title"] or "",
-                    "description": article["description"] or "",
-                    "source": article["source"]["name"]
-                }
+            if not article["publishedAt"].startswith(today):
+                continue
+
+            if article["url"] in state["sent_ids"]:
+                continue
+
+            if not article["title"] or not article["description"]:
+                continue
+
+            return {
+                "id": article["url"],
+                "title": article["title"],
+                "description": article["description"],
+                "source": article["source"]["name"],
+                "date": article["publishedAt"]
+            }
 
         return None
 
@@ -108,86 +105,85 @@ def get_news():
         return None
 
 # =========================
-# 🤖 IA RESUMO
+# IA CONTROLADA (SEM INVENTAR)
 # =========================
 
-def summarize_with_ai(title, description):
+def generate_safe_viral_post(title, description):
 
-    try:
-        client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=GROQ_API_KEY)
 
-        prompt = f"""
-        Gere um resumo estratégico em até 250 caracteres.
+    prompt = f"""
+Crie um post para X usando APENAS as informações abaixo.
+NÃO adicione fatos novos.
+NÃO extrapole.
+NÃO invente contexto.
 
-        Título: {title}
-        Descrição: {description}
+Regras:
+- Comece com 🚨
+- Linguagem direta
+- Até 280 caracteres
+- Final com pergunta estratégica
+- Use hashtags relacionadas
 
-        Use tom profissional e inclua hashtags relevantes.
-        """
+Título: {title}
+Descrição: {description}
+"""
 
-        chat = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": "Você é um analista geopolítico e financeiro."},
-                {"role": "user", "content": prompt}
-            ],
-            model="llama-3.1-8b-instant",
-            temperature=0.6,
-            max_tokens=250
-        )
+    chat = client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": "Você é um jornalista financeiro responsável."},
+            {"role": "user", "content": prompt}
+        ],
+        model="llama-3.1-8b-instant",
+        temperature=0.4,
+        max_tokens=280
+    )
 
-        return chat.choices[0].message.content
-
-    except Exception as e:
-        logging.error(f"Erro Groq: {e}")
-        return None
+    return chat.choices[0].message.content
 
 # =========================
-# 🚨 RADAR
+# RADAR
 # =========================
 
 @app.route("/radar")
 def radar():
 
-    news = get_news()
+    news = get_today_news()
 
     if not news:
-        return "Sem notícias novas."
+        return "Sem notícias novas de hoje."
 
-    summary = summarize_with_ai(news["title"], news["description"])
-
-    if not summary:
-        return "Erro ao gerar resumo."
+    post = generate_safe_viral_post(news["title"], news["description"])
 
     message = f"""
-🚨 *ZAPID GLOBAL RADAR*
+🚨 ZAPID GLOBAL RADAR
 
-{summary}
+{post}
 
 📰 Fonte: {news['source']}
+📅 {news['date'][:10]}
 """
 
     if send_telegram(message):
-
         state = load_sent_news()
         state["sent_ids"].append(news["id"])
         save_sent_news(state)
-
         return "Radar executado com sucesso."
 
-    else:
-        return "Erro ao enviar Telegram."
+    return "Erro ao enviar."
 
 # =========================
-# 🟢 STATUS
+# STATUS
 # =========================
 
 @app.route("/")
 def home():
-    return "ZapID Telegram Radar Online 🚀"
+    return "ZapID Telegram Radar Seguro Online 🚀"
 
 # =========================
-# 🚀 START
+# START
 # =========================
 
 if __name__ == "__main__":
-    app.run()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
