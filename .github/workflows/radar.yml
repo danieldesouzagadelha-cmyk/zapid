@@ -2,10 +2,7 @@ name: Radar ZapID
 
 on:
   schedule:
-    - cron: '0 11 * * *'
-    - cron: '0 15 * * *'
-    - cron: '0 21 * * *'
-    - cron: '0 1 * * *'
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Call Radar Endpoint
-        run: curl https://zapid-cdu7.onrender.com/radar
+        run: curl https://SEU-RENDER.onrender.com/radar
