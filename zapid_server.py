@@ -2,12 +2,16 @@ import os
 import requests
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 from groq import Groq
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
+
+# =========================
+# VARIÁVEIS
+# =========================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -37,6 +41,7 @@ def save_sent_news(data):
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
@@ -52,12 +57,13 @@ def send_telegram(message):
         return False
 
 # =========================
-# BUSCAR NOTÍCIAS DE HOJE
+# BUSCAR NOTÍCIAS (ÚLTIMAS 6 HORAS)
 # =========================
 
-def get_today_news():
+def get_recent_news():
     try:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        now = datetime.utcnow()
+        six_hours_ago = now - timedelta(hours=6)
 
         query = """
         bitcoin OR cryptocurrency OR ethereum OR
@@ -81,13 +87,20 @@ def get_today_news():
         state = load_sent_news()
 
         for article in articles:
-            if not article["publishedAt"].startswith(today):
+            if not article.get("publishedAt"):
+                continue
+
+            published_at = datetime.strptime(
+                article["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+            if published_at < six_hours_ago:
                 continue
 
             if article["url"] in state["sent_ids"]:
                 continue
 
-            if not article["title"] or not article["description"]:
+            if not article.get("title") or not article.get("description"):
                 continue
 
             return {
@@ -115,15 +128,16 @@ def generate_safe_viral_post(title, description):
     prompt = f"""
 Crie um post para X usando APENAS as informações abaixo.
 NÃO adicione fatos novos.
-NÃO extrapole.
 NÃO invente contexto.
+Se a informação não estiver no texto, não mencione.
 
 Regras:
 - Comece com 🚨
 - Linguagem direta
+- Tom estratégico
 - Até 280 caracteres
-- Final com pergunta estratégica
-- Use hashtags relacionadas
+- Final com pergunta que gere engajamento
+- Inclua hashtags relevantes
 
 Título: {title}
 Descrição: {description}
@@ -131,11 +145,11 @@ Descrição: {description}
 
     chat = client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "Você é um jornalista financeiro responsável."},
+            {"role": "system", "content": "Você é um jornalista financeiro responsável e preciso."},
             {"role": "user", "content": prompt}
         ],
         model="llama-3.1-8b-instant",
-        temperature=0.4,
+        temperature=0.3,
         max_tokens=280
     )
 
@@ -148,10 +162,10 @@ Descrição: {description}
 @app.route("/radar")
 def radar():
 
-    news = get_today_news()
+    news = get_recent_news()
 
     if not news:
-        return "Sem notícias novas de hoje."
+        return "Sem notícias relevantes nas últimas 6 horas."
 
     post = generate_safe_viral_post(news["title"], news["description"])
 
@@ -178,10 +192,10 @@ def radar():
 
 @app.route("/")
 def home():
-    return "ZapID Telegram Radar Seguro Online 🚀"
+    return "ZapID Telegram Radar 6H Online 🚀"
 
 # =========================
-# START
+# START (RENDER)
 # =========================
 
 if __name__ == "__main__":
