@@ -11,7 +11,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # =========================
-# 🔐 VARIÁVEIS DE AMBIENTE
+# 🔐 VARIÁVEIS
 # =========================
 
 groq_api_key = os.getenv("GROQ_API_KEY")
@@ -26,7 +26,7 @@ meu_whatsapp = os.getenv("MY_WHATSAPP_NUMBER")
 STATE_FILE = "sent_news.json"
 
 # =========================
-# 📁 CONTROLE DE ESTADO
+# 📁 CONTROLE DE NOTÍCIAS
 # =========================
 
 def load_sent_news():
@@ -57,48 +57,25 @@ def get_btc_price():
         return round(price, 2)
 
     except Exception as e:
-        logging.error(f"Erro ao buscar BTC: {e}")
+        logging.error(f"Erro BTC: {e}")
         return None
 
 # =========================
-# 🤖 GROQ IA
+# 📰 BUSCAR NOTÍCIAS POR CATEGORIA
 # =========================
 
-def ask_groq(prompt):
+def get_news_by_category(category="crypto"):
     try:
-        client = Groq(api_key=groq_api_key)
+        queries = {
+            "crypto": "bitcoin OR cryptocurrency OR ethereum",
+            "politica": "politics OR government OR election",
+            "economia": "economy OR inflation OR federal reserve",
+            "geopolitica": "geopolitics OR war OR global tensions"
+        }
 
-        chat = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Você é um analista profissional de mercado. Nunca invente preços de ativos financeiros. Se não tiver dados reais, informe que precisa consultar API."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            model="llama-3.1-8b-instant",
-            temperature=0.6,
-            max_tokens=300
-        )
-
-        return chat.choices[0].message.content
-
-    except Exception as e:
-        logging.error(f"Erro no Groq: {e}")
-        return None
-
-# =========================
-# 📰 BUSCAR NOTÍCIA
-# =========================
-
-def get_latest_news():
-    try:
         url = "https://newsapi.org/v2/everything"
         params = {
-            "q": "bitcoin OR crypto OR macroeconomy OR federal reserve OR geopolitics",
+            "q": queries.get(category, queries["crypto"]),
             "language": "en",
             "sortBy": "publishedAt",
             "pageSize": 5,
@@ -124,7 +101,37 @@ def get_latest_news():
         return None
 
     except Exception as e:
-        logging.error(f"Erro ao buscar notícia: {e}")
+        logging.error(f"Erro NewsAPI: {e}")
+        return None
+
+# =========================
+# 🤖 IA PARA ANÁLISE
+# =========================
+
+def ask_groq(prompt):
+    try:
+        client = Groq(api_key=groq_api_key)
+
+        chat = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Você é um analista profissional. Nunca invente preços ou dados atuais. Use apenas para análise ou opinião."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            model="llama-3.1-8b-instant",
+            temperature=0.6,
+            max_tokens=300
+        )
+
+        return chat.choices[0].message.content
+
+    except Exception as e:
+        logging.error(f"Erro Groq: {e}")
         return None
 
 # =========================
@@ -145,17 +152,17 @@ def send_whatsapp(message):
         return True
 
     except Exception as e:
-        logging.error(f"Erro ao enviar WhatsApp: {e}")
+        logging.error(f"Erro WhatsApp: {e}")
         return False
 
 # =========================
-# 🚨 RADAR
+# 🚨 RADAR AUTOMÁTICO
 # =========================
 
 @app.route("/radar")
 def radar():
 
-    news = get_latest_news()
+    news = get_news_by_category("crypto")
 
     if not news:
         return "Sem notícias novas."
@@ -163,7 +170,7 @@ def radar():
     prompt = f"""
 🚨 ALERTA ZAPID
 
-Resumo estratégico da notícia abaixo em até 280 caracteres.
+Resumo estratégico em até 280 caracteres:
 
 Título: {news['title']}
 Descrição: {news['description']}
@@ -176,9 +183,7 @@ Descrição: {news['description']}
 
     post = post[:280]
 
-    success = send_whatsapp(post)
-
-    if not success:
+    if not send_whatsapp(post):
         return "Erro ao enviar WhatsApp."
 
     state = load_sent_news()
@@ -188,7 +193,7 @@ Descrição: {news['description']}
     return "Radar executado com sucesso."
 
 # =========================
-# 📲 WEBHOOK TWILIO
+# 📲 WEBHOOK INTELIGENTE
 # =========================
 
 @app.route("/webhook", methods=["POST"])
@@ -197,7 +202,7 @@ def webhook():
     incoming_msg = request.form.get("Body", "")
     msg_lower = incoming_msg.lower()
 
-    # 🔥 DETECÇÃO INTELIGENTE DE BTC
+    # 🔥 PREÇO BTC
     if any(p in msg_lower for p in ["btc", "bitcoin"]):
         price = get_btc_price()
 
@@ -206,6 +211,26 @@ def webhook():
         else:
             resposta = "Erro ao buscar preço do BTC."
 
+    # 📰 NOTÍCIAS
+    elif any(p in msg_lower for p in ["noticia", "notícias", "news"]):
+
+        if "politica" in msg_lower:
+            category = "politica"
+        elif "economia" in msg_lower:
+            category = "economia"
+        elif "geopolitica" in msg_lower:
+            category = "geopolitica"
+        else:
+            category = "crypto"
+
+        news = get_news_by_category(category)
+
+        if news:
+            resposta = f"📰 {news['title']}\n\n{news['description']}"
+        else:
+            resposta = "Não encontrei notícias recentes."
+
+    # 🤖 CONVERSA NORMAL
     else:
         resposta = ask_groq(incoming_msg) or "Erro ao processar mensagem."
 
