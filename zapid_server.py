@@ -8,7 +8,6 @@ from twilio.rest import Client
 from groq import Groq
 
 app = Flask(__name__)
-
 logging.basicConfig(level=logging.INFO)
 
 # =========================
@@ -24,11 +23,11 @@ twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_whatsapp = os.getenv("TWILIO_WHATSAPP_NUMBER")
 meu_whatsapp = os.getenv("MY_WHATSAPP_NUMBER")
 
+STATE_FILE = "sent_news.json"
+
 # =========================
 # 📁 CONTROLE DE ESTADO
 # =========================
-
-STATE_FILE = "sent_news.json"
 
 def load_sent_news():
     try:
@@ -42,15 +41,7 @@ def save_sent_news(data):
         json.dump(data, f)
 
 # =========================
-# 🟢 STATUS
-# =========================
-
-@app.route("/")
-def home():
-    return "ZapID Radar Online 🚀"
-
-# =========================
-# 💰 BTC REAL TIME
+# 💰 PREÇO BTC REAL
 # =========================
 
 def get_btc_price():
@@ -81,7 +72,7 @@ def ask_groq(prompt):
             messages=[
                 {
                     "role": "system",
-                    "content": "Você é um analista profissional de mercado, especialista em cripto, macroeconomia e geopolítica. Gere posts estratégicos de até 280 caracteres para Twitter."
+                    "content": "Você é um analista profissional de mercado. Nunca invente preços de ativos financeiros. Se não tiver dados reais, informe que precisa consultar API."
                 },
                 {
                     "role": "user",
@@ -150,7 +141,7 @@ def send_whatsapp(message):
             to=f"whatsapp:{meu_whatsapp}"
         )
 
-        logging.info(f"Mensagem enviada com SID: {msg.sid}")
+        logging.info(f"Mensagem enviada SID: {msg.sid}")
         return True
 
     except Exception as e:
@@ -158,7 +149,7 @@ def send_whatsapp(message):
         return False
 
 # =========================
-# 🚨 RADAR AUTOMÁTICO
+# 🚨 RADAR
 # =========================
 
 @app.route("/radar")
@@ -167,15 +158,12 @@ def radar():
     news = get_latest_news()
 
     if not news:
-        return "Sem notícias novas disponíveis."
+        return "Sem notícias novas."
 
     prompt = f"""
-Baseado na notícia abaixo, gere um post de até 280 caracteres.
-
-Estrutura obrigatória:
 🚨 ALERTA ZAPID
-Resumo estratégico objetivo
-Hashtags relevantes
+
+Resumo estratégico da notícia abaixo em até 280 caracteres.
 
 Título: {news['title']}
 Descrição: {news['description']}
@@ -184,16 +172,14 @@ Descrição: {news['description']}
     post = ask_groq(prompt)
 
     if not post:
-        return "Erro ao gerar post com IA."
+        return "Erro ao gerar post."
 
     post = post[:280]
-
-    logging.info(f"Post gerado: {post}")
 
     success = send_whatsapp(post)
 
     if not success:
-        return "Erro ao enviar mensagem pelo Twilio."
+        return "Erro ao enviar WhatsApp."
 
     state = load_sent_news()
     state["sent_ids"].append(news["id"])
@@ -211,12 +197,15 @@ def webhook():
     incoming_msg = request.form.get("Body", "")
     msg_lower = incoming_msg.lower()
 
-    if "btc agora" in msg_lower:
+    # 🔥 DETECÇÃO INTELIGENTE DE BTC
+    if any(p in msg_lower for p in ["btc", "bitcoin"]):
         price = get_btc_price()
+
         if price:
             resposta = f"💰 BTC agora: ${price}"
         else:
             resposta = "Erro ao buscar preço do BTC."
+
     else:
         resposta = ask_groq(incoming_msg) or "Erro ao processar mensagem."
 
