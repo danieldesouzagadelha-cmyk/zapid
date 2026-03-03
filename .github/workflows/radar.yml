@@ -10,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Call Radar Endpoint
-        run: curl https://SEU-RENDER.onrender.com/radar
+        run: curl https://zapid-cdu7.onrender.com/radar
