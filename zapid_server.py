@@ -57,13 +57,13 @@ def send_telegram(message):
         return False
 
 # =========================
-# BUSCAR NOTÍCIAS (ÚLTIMAS 6 HORAS)
+# BUSCAR NOTÍCIAS (ÚLTIMAS 24H)
 # =========================
 
 def get_recent_news():
     try:
         now = datetime.utcnow()
-        six_hours_ago = now - timedelta(hours=6)
+        twenty_four_hours_ago = now - timedelta(hours=24)
 
         query = """
         bitcoin OR cryptocurrency OR ethereum OR
@@ -77,7 +77,7 @@ def get_recent_news():
             "q": query,
             "language": "en",
             "sortBy": "publishedAt",
-            "pageSize": 20,
+            "pageSize": 30,
             "apiKey": NEWS_API_KEY
         }
 
@@ -94,7 +94,7 @@ def get_recent_news():
                 article["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
             )
 
-            if published_at < six_hours_ago:
+            if published_at < twenty_four_hours_ago:
                 continue
 
             if article["url"] in state["sent_ids"]:
@@ -118,7 +118,7 @@ def get_recent_news():
         return None
 
 # =========================
-# IA CONTROLADA (SEM INVENTAR)
+# IA CONTROLADA
 # =========================
 
 def generate_safe_viral_post(title, description):
@@ -127,16 +127,15 @@ def generate_safe_viral_post(title, description):
 
     prompt = f"""
 Crie um post para X usando APENAS as informações abaixo.
-NÃO adicione fatos novos.
-NÃO invente contexto.
-Se a informação não estiver no texto, não mencione.
+NÃO invente fatos.
+NÃO extrapole além do texto.
 
 Regras:
 - Comece com 🚨
 - Linguagem direta
 - Tom estratégico
 - Até 280 caracteres
-- Final com pergunta que gere engajamento
+- Final com pergunta para engajamento
 - Inclua hashtags relevantes
 
 Título: {title}
@@ -145,7 +144,7 @@ Descrição: {description}
 
     chat = client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "Você é um jornalista financeiro responsável e preciso."},
+            {"role": "system", "content": "Você é um jornalista financeiro responsável."},
             {"role": "user", "content": prompt}
         ],
         model="llama-3.1-8b-instant",
@@ -165,7 +164,7 @@ def radar():
     news = get_recent_news()
 
     if not news:
-        return "Sem notícias relevantes nas últimas 6 horas."
+        return "Sem notícias relevantes nas últimas 24 horas."
 
     post = generate_safe_viral_post(news["title"], news["description"])
 
@@ -192,7 +191,7 @@ def radar():
 
 @app.route("/")
 def home():
-    return "ZapID Telegram Radar 6H Online 🚀"
+    return "ZapID Telegram Radar 24H Online 🚀"
 
 # =========================
 # START (RENDER)
