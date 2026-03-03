@@ -67,8 +67,12 @@ def get_recent_news():
 
         query = """
         bitcoin OR cryptocurrency OR ethereum OR
-        inflation OR economy OR federal reserve OR
-        geopolitics OR war OR government
+        inflation OR economy OR federal reserve OR interest rates OR
+        stock market OR S&P 500 OR Nasdaq OR Dow Jones OR
+        ETF OR BlackRock OR institutional investors OR
+        geopolitics OR war OR oil prices OR OPEC OR
+        AI regulation OR tech stocks OR Nvidia OR
+        central bank OR treasury yields OR bonds OR commodities
         """
 
         url = "https://newsapi.org/v2/everything"
@@ -77,7 +81,7 @@ def get_recent_news():
             "q": query,
             "language": "en",
             "sortBy": "publishedAt",
-            "pageSize": 30,
+            "pageSize": 40,
             "apiKey": NEWS_API_KEY
         }
 
@@ -118,7 +122,7 @@ def get_recent_news():
         return None
 
 # =========================
-# IA CONTROLADA
+# IA CONTROLADA – POST VIRAL
 # =========================
 
 def generate_safe_viral_post(title, description):
@@ -144,7 +148,7 @@ Descrição: {description}
 
     chat = client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "Você é um jornalista financeiro responsável."},
+            {"role": "system", "content": "Você é um analista financeiro profissional."},
             {"role": "user", "content": prompt}
         ],
         model="llama-3.1-8b-instant",
@@ -191,7 +195,7 @@ def radar():
 
 @app.route("/")
 def home():
-    return "ZapID Telegram Radar 24H Online 🚀"
+    return "ZapID Macro Radar Online 🚀"
 
 # =========================
 # START (RENDER)
