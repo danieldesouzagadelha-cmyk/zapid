@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import logging
+import feedparser
 from datetime import datetime, timedelta
 from flask import Flask
 from groq import Groq
@@ -9,16 +10,16 @@ from groq import Groq
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# =========================
-# VARIÁVEIS
-# =========================
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 STATE_FILE = "sent_news.json"
+
+RSS_FEEDS = [
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://www.coindesk.com/arc/outboundfeeds/rss/"
+]
 
 # =========================
 # CONTROLE DE ESTADO
@@ -41,105 +42,63 @@ def save_sent_news(data):
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
     }
-
-    response = requests.post(url, data=payload)
-
-    if response.status_code == 200:
-        logging.info("Mensagem enviada")
-        return True
-    else:
-        logging.error(response.text)
-        return False
+    requests.post(url, data=payload)
 
 # =========================
-# BUSCAR NOTÍCIAS (ÚLTIMAS 24H)
+# BUSCAR RSS
 # =========================
 
 def get_recent_news():
-    try:
-        now = datetime.utcnow()
-        twenty_four_hours_ago = now - timedelta(hours=24)
+    state = load_sent_news()
+    now = datetime.utcnow()
+    twenty_four_hours_ago = now - timedelta(hours=24)
 
-        query = """
-        bitcoin OR cryptocurrency OR ethereum OR
-        inflation OR economy OR federal reserve OR interest rates OR
-        stock market OR S&P 500 OR Nasdaq OR Dow Jones OR
-        ETF OR BlackRock OR institutional investors OR
-        geopolitics OR war OR oil prices OR OPEC OR
-        AI regulation OR tech stocks OR Nvidia OR
-        central bank OR treasury yields OR bonds OR commodities
-        """
+    for feed_url in RSS_FEEDS:
+        feed = feedparser.parse(feed_url)
 
-        url = "https://newsapi.org/v2/everything"
-
-        params = {
-            "q": query,
-            "language": "en",
-            "sortBy": "publishedAt",
-            "pageSize": 40,
-            "apiKey": NEWS_API_KEY
-        }
-
-        response = requests.get(url, params=params, timeout=10)
-        articles = response.json().get("articles", [])
-
-        state = load_sent_news()
-
-        for article in articles:
-            if not article.get("publishedAt"):
+        for entry in feed.entries:
+            if not hasattr(entry, "published_parsed"):
                 continue
 
-            published_at = datetime.strptime(
-                article["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
-            )
+            published_at = datetime(*entry.published_parsed[:6])
 
             if published_at < twenty_four_hours_ago:
                 continue
 
-            if article["url"] in state["sent_ids"]:
-                continue
-
-            if not article.get("title") or not article.get("description"):
+            if entry.link in state["sent_ids"]:
                 continue
 
             return {
-                "id": article["url"],
-                "title": article["title"],
-                "description": article["description"],
-                "source": article["source"]["name"],
-                "date": article["publishedAt"]
+                "id": entry.link,
+                "title": entry.title,
+                "description": entry.summary if hasattr(entry, "summary") else "",
+                "source": feed.feed.title,
+                "date": published_at.strftime("%Y-%m-%d")
             }
 
-        return None
-
-    except Exception as e:
-        logging.error(f"Erro NewsAPI: {e}")
-        return None
+    return None
 
 # =========================
-# IA CONTROLADA – POST VIRAL
+# IA VIRAL CONTROLADA
 # =========================
 
-def generate_safe_viral_post(title, description):
+def generate_post(title, description):
 
     client = Groq(api_key=GROQ_API_KEY)
 
     prompt = f"""
 Crie um post para X usando APENAS as informações abaixo.
-NÃO invente fatos.
-NÃO extrapole além do texto.
+Não invente fatos.
 
 Regras:
 - Comece com 🚨
 - Linguagem direta
-- Tom estratégico
 - Até 280 caracteres
-- Final com pergunta para engajamento
+- Final com pergunta estratégica
 - Inclua hashtags relevantes
 
 Título: {title}
@@ -152,7 +111,7 @@ Descrição: {description}
             {"role": "user", "content": prompt}
         ],
         model="llama-3.1-8b-instant",
-        temperature=0.3,
+        temperature=0.4,
         max_tokens=280
     )
 
@@ -168,9 +127,9 @@ def radar():
     news = get_recent_news()
 
     if not news:
-        return "Sem notícias relevantes nas últimas 24 horas."
+        return "Sem notícias recentes nas últimas 24h."
 
-    post = generate_safe_viral_post(news["title"], news["description"])
+    post = generate_post(news["title"], news["description"])
 
     message = f"""
 🚨 ZAPID GLOBAL RADAR
@@ -178,28 +137,20 @@ def radar():
 {post}
 
 📰 Fonte: {news['source']}
-📅 {news['date'][:10]}
+📅 {news['date']}
 """
 
-    if send_telegram(message):
-        state = load_sent_news()
-        state["sent_ids"].append(news["id"])
-        save_sent_news(state)
-        return "Radar executado com sucesso."
+    send_telegram(message)
 
-    return "Erro ao enviar."
+    state = load_sent_news()
+    state["sent_ids"].append(news["id"])
+    save_sent_news(state)
 
-# =========================
-# STATUS
-# =========================
+    return "Radar executado com sucesso."
 
 @app.route("/")
 def home():
-    return "ZapID Macro Radar Online 🚀"
-
-# =========================
-# START (RENDER)
-# =========================
+    return "ZapID RSS Radar Online 🚀"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
