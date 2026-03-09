@@ -41,11 +41,14 @@ def save_sent_news(data):
 # =========================
 
 def send_telegram(message):
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
     }
+
     requests.post(url, data=payload)
 
 # =========================
@@ -53,14 +56,18 @@ def send_telegram(message):
 # =========================
 
 def get_recent_news():
+
     state = load_sent_news()
+
     now = datetime.utcnow()
     twenty_four_hours_ago = now - timedelta(hours=24)
 
     for feed_url in RSS_FEEDS:
+
         feed = feedparser.parse(feed_url)
 
         for entry in feed.entries:
+
             if not hasattr(entry, "published_parsed"):
                 continue
 
@@ -83,23 +90,55 @@ def get_recent_news():
     return None
 
 # =========================
-# IA VIRAL CONTROLADA
+# IA - GERA TEXTO COMPLETO
 # =========================
 
-def generate_post(title, description):
+def generate_detailed_news(title, description):
+
+    client = Groq(api_key=GROQ_API_KEY)
+
+    prompt = f"""
+Explique a notícia abaixo de forma clara e profissional.
+
+Regras:
+- 3 a 4 frases
+- linguagem simples
+- não inventar fatos
+- explicar o impacto no mercado
+
+Título: {title}
+Descrição: {description}
+"""
+
+    chat = client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": "Você é um analista financeiro profissional."},
+            {"role": "user", "content": prompt}
+        ],
+        model="llama-3.1-8b-instant",
+        temperature=0.3,
+        max_tokens=200
+    )
+
+    return chat.choices[0].message.content
+
+
+# =========================
+# IA - POST PARA X
+# =========================
+
+def generate_x_post(title, description):
 
     client = Groq(api_key=GROQ_API_KEY)
 
     prompt = f"""
 Crie um post para X usando APENAS as informações abaixo.
-Não invente fatos.
 
 Regras:
-- Comece com 🚨
-- Linguagem direta
-- Até 280 caracteres
-- Final com pergunta estratégica
-- Inclua hashtags relevantes
+- máximo 280 caracteres
+- começar com 🚨
+- linguagem direta
+- incluir hashtags relevantes
 
 Título: {title}
 Descrição: {description}
@@ -112,10 +151,11 @@ Descrição: {description}
         ],
         model="llama-3.1-8b-instant",
         temperature=0.4,
-        max_tokens=280
+        max_tokens=120
     )
 
     return chat.choices[0].message.content
+
 
 # =========================
 # RADAR
@@ -127,14 +167,20 @@ def radar():
     news = get_recent_news()
 
     if not news:
-        return "Sem notícias recentes nas últimas 24h."
+        return "Sem notícias recentes."
 
-    post = generate_post(news["title"], news["description"])
+    detailed = generate_detailed_news(news["title"], news["description"])
+
+    x_post = generate_x_post(news["title"], news["description"])
 
     message = f"""
-🚨 ZAPID GLOBAL RADAR
+📰 ZAPID GLOBAL RADAR
 
-{post}
+{detailed}
+
+✂️ Versão para X (280):
+
+{x_post}
 
 📰 Fonte: {news['source']}
 📅 {news['date']}
