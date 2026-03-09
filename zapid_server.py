@@ -22,21 +22,6 @@ RSS_FEEDS = [
 ]
 
 # =========================
-# CONTROLE DE ESTADO
-# =========================
-
-def load_sent_news():
-    try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {"sent_ids": []}
-
-def save_sent_news(data):
-    with open(STATE_FILE, "w") as f:
-        json.dump(data, f)
-
-# =========================
 # TELEGRAM
 # =========================
 
@@ -52,7 +37,22 @@ def send_telegram(message):
     requests.post(url, data=payload)
 
 # =========================
-# BUSCAR RSS
+# CONTROLE DE NOTÍCIAS
+# =========================
+
+def load_sent_news():
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"sent_ids": []}
+
+def save_sent_news(data):
+    with open(STATE_FILE, "w") as f:
+        json.dump(data, f)
+
+# =========================
+# BUSCAR NOTÍCIAS RSS
 # =========================
 
 def get_recent_news():
@@ -60,7 +60,7 @@ def get_recent_news():
     state = load_sent_news()
 
     now = datetime.utcnow()
-    twenty_four_hours_ago = now - timedelta(hours=24)
+    day_ago = now - timedelta(hours=24)
 
     for feed_url in RSS_FEEDS:
 
@@ -71,9 +71,9 @@ def get_recent_news():
             if not hasattr(entry, "published_parsed"):
                 continue
 
-            published_at = datetime(*entry.published_parsed[:6])
+            published = datetime(*entry.published_parsed[:6])
 
-            if published_at < twenty_four_hours_ago:
+            if published < day_ago:
                 continue
 
             if entry.link in state["sent_ids"]:
@@ -84,13 +84,13 @@ def get_recent_news():
                 "title": entry.title,
                 "description": entry.summary if hasattr(entry, "summary") else "",
                 "source": feed.feed.title,
-                "date": published_at.strftime("%Y-%m-%d")
+                "date": published.strftime("%Y-%m-%d")
             }
 
     return None
 
 # =========================
-# IA - GERA TEXTO COMPLETO
+# IA EXPLICA NOTÍCIA
 # =========================
 
 def generate_detailed_news(title, description):
@@ -98,23 +98,20 @@ def generate_detailed_news(title, description):
     client = Groq(api_key=GROQ_API_KEY)
 
     prompt = f"""
-Explique a notícia abaixo de forma clara e profissional.
-
-Regras:
-- 3 a 4 frases
-- linguagem simples
-- não inventar fatos
-- explicar o impacto no mercado
+Explique a notícia abaixo em 3 frases claras.
 
 Título: {title}
+
 Descrição: {description}
 """
 
     chat = client.chat.completions.create(
+
         messages=[
-            {"role": "system", "content": "Você é um analista financeiro profissional."},
+            {"role": "system", "content": "Você é analista financeiro."},
             {"role": "user", "content": prompt}
         ],
+
         model="llama-3.1-8b-instant",
         temperature=0.3,
         max_tokens=200
@@ -122,9 +119,8 @@ Descrição: {description}
 
     return chat.choices[0].message.content
 
-
 # =========================
-# IA - POST PARA X
+# IA CRIA POST PARA X
 # =========================
 
 def generate_x_post(title, description):
@@ -132,23 +128,25 @@ def generate_x_post(title, description):
     client = Groq(api_key=GROQ_API_KEY)
 
     prompt = f"""
-Crie um post para X usando APENAS as informações abaixo.
+Crie um post para X com até 280 caracteres.
 
 Regras:
-- máximo 280 caracteres
-- começar com 🚨
-- linguagem direta
-- incluir hashtags relevantes
+- Comece com 🚨
+- Linguagem direta
+- Inclua hashtags
 
 Título: {title}
+
 Descrição: {description}
 """
 
     chat = client.chat.completions.create(
+
         messages=[
-            {"role": "system", "content": "Você é um analista financeiro profissional."},
+            {"role": "system", "content": "Você é analista financeiro."},
             {"role": "user", "content": prompt}
         ],
+
         model="llama-3.1-8b-instant",
         temperature=0.4,
         max_tokens=120
@@ -156,9 +154,8 @@ Descrição: {description}
 
     return chat.choices[0].message.content
 
-
 # =========================
-# RADAR
+# ROTA RADAR
 # =========================
 
 @app.route("/radar")
@@ -178,7 +175,7 @@ def radar():
 
 {detailed}
 
-✂️ Versão para X (280):
+✂️ Post para X:
 
 {x_post}
 
@@ -192,12 +189,22 @@ def radar():
     state["sent_ids"].append(news["id"])
     save_sent_news(state)
 
-    return "Radar executado com sucesso."
+    return "Radar executado."
+
+# =========================
+# HOME
+# =========================
 
 @app.route("/")
 def home():
     return "ZapID RSS Radar Online 🚀"
 
+# =========================
+# RUN
+# =========================
+
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", 10000))
+
     app.run(host="0.0.0.0", port=port)
