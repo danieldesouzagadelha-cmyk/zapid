@@ -11,7 +11,6 @@ app = Flask(__name__)
 # =========================
 
 def startup():
-    """Inicializa banco e bot ao subir o servidor"""
     try:
         from database import setup_db
         setup_db()
@@ -19,9 +18,13 @@ def startup():
         print(f"⚠️ DB setup error: {e}")
 
     try:
-        from telegram_bot import start_bot, send_telegram
-        start_bot()
-        send_telegram("🚀 <b>ZapID Pro está online!</b>\nRadar automático ativado — análise a cada hora.")
+        from telegram_bot import send_telegram
+        send_telegram(
+            "🚀 <b>ZapID Pro está online!</b>\n"
+            "📡 Radar de mercado: a cada 1h\n"
+            "📰 Radar de notícias: a cada 1h\n"
+            "🐦 Posts automáticos no X ativados"
+        )
     except Exception as e:
         print(f"⚠️ Telegram start error: {e}")
 
@@ -31,7 +34,7 @@ def startup():
 # =========================
 
 def run_scan():
-    """Executa o scan completo — usado pelo auto_radar e pela rota /radar"""
+    """Scan de mercado completo"""
     try:
         from market_scanner import run_radar
         from ai_predictor import enrich_signals
@@ -81,16 +84,25 @@ def home():
         "status": "online",
         "engine": "ZapID Pro",
         "version": "2.0",
-        "endpoints": ["/radar", "/signals", "/performance", "/trades", "/monitor"]
+        "endpoints": ["/radar", "/news", "/signals", "/performance", "/trades", "/monitor"]
     })
 
 
 @app.route("/radar")
 def radar():
-    """Rota manual — também chamada pelo GitHub Action"""
-    print("🛰️ /radar chamado manualmente")
     result = run_scan()
     return jsonify(result)
+
+
+@app.route("/news")
+def news():
+    """Dispara o radar de notícias manualmente"""
+    try:
+        from news_radar import run_news_radar
+        posted = run_news_radar()
+        return jsonify({"status": "ok", "posted": posted})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/signals")
@@ -170,21 +182,30 @@ def register_buy():
 
 
 # =========================
-# AUTO RADAR — 1x por hora
+# THREADS AUTOMÁTICAS
 # =========================
 
 def auto_radar():
-    """Roda o radar automaticamente a cada hora sem ninguém pedir"""
-    time.sleep(30)  # aguarda inicialização completa
+    """Radar de mercado — 1x por hora"""
+    time.sleep(30)
     while True:
-        print("⏰ Auto-radar disparado!")
+        print("⏰ Auto-radar de mercado disparado!")
         run_scan()
-        time.sleep(3600)  # 1 hora
+        time.sleep(3600)
 
 
-# =========================
-# KEEP-ALIVE (Render free)
-# =========================
+def auto_news():
+    """Radar de notícias — 1x por hora (offset 30min do radar)"""
+    time.sleep(1800)  # começa 30 minutos depois do radar
+    while True:
+        print("📰 Auto-radar de notícias disparado!")
+        try:
+            from news_radar import run_news_radar
+            run_news_radar()
+        except Exception as e:
+            print(f"❌ Erro auto_news: {e}")
+        time.sleep(3600)
+
 
 def keep_alive():
     """Ping interno a cada 10min para o Render não dormir"""
@@ -206,13 +227,13 @@ def keep_alive():
 
 @app.before_request
 def before_first():
-    """Roda na primeira request — compatível com Gunicorn"""
     global _started
     if not _started:
         _started = True
         startup()
-        threading.Thread(target=auto_radar, daemon=True).start()
-        threading.Thread(target=keep_alive, daemon=True).start()
+        threading.Thread(target=auto_radar,  daemon=True).start()
+        threading.Thread(target=auto_news,   daemon=True).start()
+        threading.Thread(target=keep_alive,  daemon=True).start()
 
 _started = False
 
