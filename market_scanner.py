@@ -327,6 +327,8 @@ def analyze_asset(symbol):
 
 def get_top20():
     """Busca top 20 moedas do CoinGecko"""
+    fallback = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+                "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "DOTUSDT"]
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/coins/markets",
@@ -339,19 +341,30 @@ def get_top20():
             },
             timeout=10
         )
-        coins = r.json()
+
+        data = r.json()
+
+        # CoinGecko retornou erro (ex: rate limit) — usa fallback
+        if not isinstance(data, list):
+            print(f"⚠️ CoinGecko resposta inesperada: {data}")
+            return fallback
+
         result = []
-        for c in coins:
-            cg_id = c["id"]
+        for c in data:
+            if not isinstance(c, dict):
+                continue
+            cg_id  = c.get("id", "")
             symbol = COINGECKO_TO_BINANCE.get(cg_id)
             if symbol:
                 result.append(symbol)
             if len(result) >= 20:
                 break
-        return result
+
+        return result if result else fallback
+
     except Exception as e:
         print(f"⚠️ CoinGecko error: {e}")
-        return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+        return fallback
 
 
 # =========================
