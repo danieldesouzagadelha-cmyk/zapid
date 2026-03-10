@@ -129,25 +129,30 @@ def create_x_post(news_item, sentiment):
             f"#Crypto #Mercado #Economia"
         )
 
-    prompt = f"""Você é um analista financeiro especialista em criptomoedas e mercados globais.
+    titulo = news_item['title']
+    resumo = news_item['summary']
+    prompt = f"""Você é um especialista em cripto e mercados globais. Crie um post em PORTUGUÊS DO BRASIL para o X (Twitter).
 
-Crie um post para o X (Twitter) sobre esta notícia e explique como ela pode impactar o mercado cripto:
+NOTÍCIA (pode estar em inglês — você DEVE escrever o post em português):
+Título: {titulo}
+Resumo: {resumo}
+Sentimento: {sentiment}
 
-TÍTULO: {news_item['title']}
-RESUMO: {news_item['summary']}
-SENTIMENTO: {sentiment}
-FONTE: {news_item['source']}
+FORMATO OBRIGATÓRIO do post:
+1. Emoji relevante + frase de impacto em português (máx 2 linhas)
+2. Explique em 1 frase o que aconteceu e o impacto no cripto
+3. 3 hashtags em português: ex: #Bitcoin #Cripto #Mercado
 
-Regras OBRIGATÓRIAS:
-- Escreva em português do Brasil
-- Máximo 240 caracteres (sem contar o link)
-- Use emojis relevantes
-- Conecte a notícia ao impacto no Bitcoin/cripto quando relevante
-- Termine com 2-3 hashtags como #Bitcoin #Crypto #Mercado
-- NÃO inclua o link no texto
-- NÃO use aspas nem explicações extras
+REGRAS:
+- TUDO em português do Brasil, sem nenhuma palavra em inglês
+- Máximo 240 caracteres no total (sem contar o link)
+- NÃO inclua o link
+- Responda APENAS com o texto do post, sem explicações
 
-Responda APENAS com o texto do post."""
+Exemplo de formato:
+🔴 Governo dos EUA anuncia novas regulações para exchanges cripto!
+Isso pode pressionar o Bitcoin no curto prazo. Fique atento! 👀
+#Bitcoin #Cripto #Regulação"""
 
     try:
         r = requests.post(
@@ -185,16 +190,38 @@ Responda APENAS com o texto do post."""
 # ENVIAR PARA TELEGRAM
 # =========================
 
+def translate_title(title):
+    if not GROK_API_KEY:
+        return title
+    try:
+        r = requests.post(
+            GROK_API_URL,
+            headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "grok-3-mini",
+                "messages": [{"role": "user", "content": f"Traduza para português do Brasil de forma natural. Responda APENAS com a tradução, sem explicações:\n\n{title}"}],
+                "max_tokens": 100,
+                "temperature": 0.3
+            },
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except:
+        return title
+
+
 def send_news_to_telegram(post_text, sentiment, source, title):
     from telegram_bot import send_telegram
 
-    emoji = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
-    label = "ALTA 🚀" if sentiment == "bullish" else "QUEDA ⚠️" if sentiment == "bearish" else "NEUTRO"
+    emoji    = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
+    label    = "ALTA 🚀" if sentiment == "bullish" else "QUEDA ⚠️" if sentiment == "bearish" else "NEUTRO"
+    title_pt = translate_title(title)
 
     msg = (
         f"{emoji} <b>NOTÍCIA — {label}</b>\n"
         f"📰 {source}\n\n"
-        f"<b>{title}</b>\n\n"
+        f"<b>{title_pt}</b>\n\n"
         f"─────────────────\n"
         f"✂️ <b>Copie e poste no X:</b>\n\n"
         f"{post_text}"
