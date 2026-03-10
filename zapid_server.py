@@ -36,20 +36,27 @@ def send_telegram(message):
         "text": message
     }
 
-    requests.post(url, data=payload)
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"Erro ao enviar Telegram: {e}")
 
 # =========================
 # CONTROLE DE NOTÍCIAS
 # =========================
 
 def load_sent_news():
+
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
+
     except:
         return {"sent_ids": []}
 
+
 def save_sent_news(data):
+
     with open(STATE_FILE, "w") as f:
         json.dump(data, f)
 
@@ -200,7 +207,30 @@ Data: {news['date']}
 @app.route("/crypto_radar")
 def crypto_radar():
 
-    run_radar()
+    logging.info("Crypto radar iniciado")
+
+    trades = run_radar()
+
+    if not trades:
+        return "Nenhuma oportunidade encontrada."
+
+    for trade in trades:
+
+        message = f"""
+🚨 ZAPID AI SPOT TRADE
+
+Asset: {trade['asset']}
+
+Entry: {trade['entry']}
+Target: {trade['target']}
+Stop: {trade['stop']}
+
+Expected Profit: ~6%
+
+Confidence: {trade['confidence']}%
+"""
+
+        send_telegram(message)
 
     return "Crypto radar executado."
 
@@ -210,6 +240,7 @@ def crypto_radar():
 
 @app.route("/")
 def home():
+
     return "ZapID Global Radar Online 🚀"
 
 # =========================
