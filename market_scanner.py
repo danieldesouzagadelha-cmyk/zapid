@@ -5,6 +5,7 @@ import os
 
 TRADES_FILE = "active_trades.json"
 
+
 # =========================
 # UTIL
 # =========================
@@ -25,28 +26,36 @@ def save_trades(data):
 
 
 # =========================
-# API COINGECKO
+# PEGAR TOP COINS
 # =========================
 
 def get_top_coins():
 
-    url = "https://api.coingecko.com/api/v3/coins/markets"
+    try:
 
-    params = {
-        "vs_currency": "usd",
-        "order": "volume_desc",
-        "per_page": 50,
-        "page": 1
-    }
+        url = "https://api.coingecko.com/api/v3/coins/markets"
 
-    r = requests.get(url, params=params)
+        params = {
+            "vs_currency": "usd",
+            "order": "volume_desc",
+            "per_page": 30,
+            "page": 1
+        }
 
-    data = r.json()
+        r = requests.get(url, params=params, timeout=10)
 
-    if not isinstance(data, list):
+        data = r.json()
+
+        if not isinstance(data, list):
+            print("Erro CoinGecko:", data)
+            return []
+
+        return data
+
+    except Exception as e:
+
+        print("Erro API:", e)
         return []
-
-    return data
 
 
 # =========================
@@ -89,29 +98,35 @@ def macd(data):
 
 def get_ohlc(coin):
 
-    url = f"https://api.coingecko.com/api/v3/coins/{coin}/ohlc"
+    try:
 
-    params = {
-        "vs_currency": "usd",
-        "days": 1
-    }
+        url = f"https://api.coingecko.com/api/v3/coins/{coin}/ohlc"
 
-    r = requests.get(url, params=params)
+        params = {
+            "vs_currency": "usd",
+            "days": 1
+        }
 
-    data = r.json()
+        r = requests.get(url, params=params, timeout=10)
 
-    if not isinstance(data, list):
+        data = r.json()
+
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+
+        df = pd.DataFrame(data, columns=[
+            "time",
+            "open",
+            "high",
+            "low",
+            "close"
+        ])
+
+        return df
+
+    except:
+
         return None
-
-    df = pd.DataFrame(data, columns=[
-        "time",
-        "open",
-        "high",
-        "low",
-        "close"
-    ])
-
-    return df
 
 
 # =========================
@@ -122,7 +137,6 @@ def buy_score(df):
 
     close = df["close"]
 
-    df["EMA20"] = ema(close, 20)
     df["EMA50"] = ema(close, 50)
     df["EMA200"] = ema(close, 200)
 
@@ -186,10 +200,12 @@ def sell_score(df):
 
 
 # =========================
-# RADAR PRINCIPAL
+# RADAR
 # =========================
 
 def run_radar():
+
+    print("📡 ZAPID AI MARKET SCANNER")
 
     coins = get_top_coins()
 
@@ -197,9 +213,18 @@ def run_radar():
 
     signals = []
 
+    if not coins:
+        return []
+
     for coin in coins:
 
-        coin_id = coin["id"]
+        if not isinstance(coin, dict):
+            continue
+
+        coin_id = coin.get("id")
+
+        if not coin_id:
+            continue
 
         df = get_ohlc(coin_id)
 
@@ -257,4 +282,3 @@ def run_radar():
     save_trades(trades)
 
     return signals
-
