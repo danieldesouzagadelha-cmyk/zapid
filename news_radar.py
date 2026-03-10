@@ -4,63 +4,79 @@ import feedparser
 import time
 
 # =========================
-# FONTES RSS — CRYPTO + MACRO
+# FONTES RSS
 # =========================
 
 RSS_FEEDS = [
-    # Crypto
     "https://cointelegraph.com/rss",
     "https://coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed",
     "https://bitcoinmagazine.com/.rss/full/",
     "https://cryptonews.com/news/feed/",
-
-    # Mercado global / economia
     "https://feeds.bloomberg.com/markets/news.rss",
-    "https://www.investing.com/rss/news.rss",
     "https://www.marketwatch.com/rss/topstories",
-
-    # Geopolítica / mundo
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://rss.reuters.com/reuters/worldNews",
-    "https://feeds.skynews.com/feeds/rss/world.xml",
 ]
 
-# palavras que indicam impacto no mercado financeiro
 KEYWORDS_IMPACT = [
-    # cripto direto
     "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain",
-    "solana", "ripple", "binance", "altcoin", "defi", "nft",
-    # economia
-    "fed", "federal reserve", "interest rate", "inflation", "gdp",
-    "recession", "dollar", "treasury", "debt", "economy", "market",
-    "stock", "nasdaq", "s&p", "oil", "gold", "commodity",
-    # geopolítica
-    "war", "sanction", "conflict", "nato", "russia", "ukraine",
-    "china", "taiwan", "iran", "north korea", "middle east",
-    "trade war", "tariff", "embargo",
-    # governo / regulação
-    "government", "president", "congress", "senate", "election",
-    "regulation", "law", "ban", "policy", "central bank",
-    "imf", "world bank", "g7", "g20",
+    "solana", "ripple", "binance", "altcoin", "defi",
+    "fed", "federal reserve", "interest rate", "inflation", "recession",
+    "dollar", "economy", "market", "stock", "nasdaq", "oil", "gold",
+    "war", "sanction", "conflict", "nato", "russia", "china", "taiwan",
+    "government", "president", "regulation", "law", "ban", "central bank",
 ]
 
 KEYWORDS_BULLISH = [
-    "surge", "rally", "record high", "bull", "breakout", "adoption",
-    "approval", "growth", "rise", "gain", "positive", "agreement",
-    "peace", "deal", "partnership", "stimulus", "cut rate"
+    "surge", "rally", "record", "bull", "breakout", "adoption", "approval",
+    "growth", "rise", "gain", "agreement", "peace", "deal", "stimulus"
 ]
 
 KEYWORDS_BEARISH = [
-    "crash", "dump", "ban", "war", "attack", "sanction", "hack",
-    "fraud", "recession", "crisis", "collapse", "fear", "drop",
-    "investigation", "arrest", "conflict", "escalation", "default"
+    "crash", "dump", "ban", "war", "attack", "sanction", "hack", "fraud",
+    "recession", "crisis", "collapse", "fear", "drop", "conflict", "default"
 ]
-
-posted_cache = set()
 
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 GROK_API_URL = "https://api.x.ai/v1/chat/completions"
+
+
+# =========================
+# CACHE — evita repetição
+# =========================
+
+def get_posted_links():
+    """Busca links já postados do banco de dados"""
+    try:
+        from database import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS news_cache (
+                        id         SERIAL PRIMARY KEY,
+                        link       TEXT UNIQUE NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                conn.commit()
+                cur.execute("SELECT link FROM news_cache WHERE created_at > NOW() - INTERVAL '24 hours'")
+                return {row["link"] for row in cur.fetchall()}
+    except Exception as e:
+        print(f"⚠️ Cache error: {e}")
+        return set()
+
+
+def mark_as_posted(link):
+    """Marca link como postado"""
+    try:
+        from database import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO news_cache (link) VALUES (%s) ON CONFLICT DO NOTHING", (link,))
+            conn.commit()
+    except Exception as e:
+        print(f"⚠️ Mark posted error: {e}")
 
 
 # =========================
@@ -68,18 +84,25 @@ GROK_API_URL = "https://api.x.ai/v1/chat/completions"
 # =========================
 
 def fetch_news():
-    news = []
+    posted = get_posted_links()
+    news   = []
+
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries[:5]:
-                title   = entry.get("title", "")
-                link    = entry.get("link", "")
-                summary = entry.get("summary", "")[:300]
+                title   = entry.get("title", "").strip()
+                link    = entry.get("link", "").strip()
+                summary = entry.get("summary", "").strip()[:400]
 
                 if not title or not link:
                     continue
-                if link in posted_cache:
+                if link in posted:
+                    continue
+
+                # filtra só notícias com impacto no mercado
+                text = (title + " " + summary).lower()
+                if not any(kw in text for kw in KEYWORDS_IMPACT):
                     continue
 
                 news.append({
@@ -90,24 +113,18 @@ def fetch_news():
                 })
         except Exception as e:
             print(f"⚠️ Erro feed {feed_url}: {e}")
+
     return news
 
 
 # =========================
-# RELEVÂNCIA + SENTIMENTO
+# SENTIMENTO
 # =========================
 
-def analyze_news(title, summary):
-    text = (title + " " + summary).lower()
-
-    # verifica se tem impacto no mercado
-    has_impact = any(kw in text for kw in KEYWORDS_IMPACT)
-    if not has_impact:
-        return None
-
+def analyze_sentiment(title, summary):
+    text    = (title + " " + summary).lower()
     bullish = sum(1 for kw in KEYWORDS_BULLISH if kw in text)
     bearish = sum(1 for kw in KEYWORDS_BEARISH if kw in text)
-
     if bullish > bearish:
         return "bullish"
     elif bearish > bullish:
@@ -116,43 +133,33 @@ def analyze_news(title, summary):
 
 
 # =========================
-# GROK — CRIAR POST PARA O X
+# GROK — PROCESSAR NOTÍCIA
 # =========================
 
-def create_x_post(news_item, sentiment):
-    emoji = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
-
+def process_news_with_grok(news_item, sentiment):
+    """
+    Grok retorna JSON com:
+    - titulo_pt: título traduzido
+    - resumo_pt: resumo em português
+    - post_x: texto pronto para copiar no X
+    """
     if not GROK_API_KEY:
-        return (
-            f"{emoji} {news_item['title'][:200]}\n\n"
-            f"{news_item['link']}\n\n"
-            f"#Crypto #Mercado #Economia"
-        )
+        return None
 
-    titulo = news_item['title']
-    resumo = news_item['summary']
-    prompt = f"""Você é um especialista em cripto e mercados globais. Crie um post em PORTUGUÊS DO BRASIL para o X (Twitter).
+    prompt = f"""Você é um especialista em criptomoedas e mercados financeiros.
 
-NOTÍCIA (pode estar em inglês — você DEVE escrever o post em português):
-Título: {titulo}
-Resumo: {resumo}
-Sentimento: {sentiment}
+Analise esta notícia e responda em JSON válido:
 
-FORMATO OBRIGATÓRIO do post:
-1. Emoji relevante + frase de impacto em português (máx 2 linhas)
-2. Explique em 1 frase o que aconteceu e o impacto no cripto
-3. 3 hashtags em português: ex: #Bitcoin #Cripto #Mercado
+TÍTULO: {news_item['title']}
+RESUMO: {news_item['summary']}
+SENTIMENTO: {sentiment}
 
-REGRAS:
-- TUDO em português do Brasil, sem nenhuma palavra em inglês
-- Máximo 240 caracteres no total (sem contar o link)
-- NÃO inclua o link
-- Responda APENAS com o texto do post, sem explicações
-
-Exemplo de formato:
-🔴 Governo dos EUA anuncia novas regulações para exchanges cripto!
-Isso pode pressionar o Bitcoin no curto prazo. Fique atento! 👀
-#Bitcoin #Cripto #Regulação"""
+Retorne EXATAMENTE este JSON (sem markdown, sem explicações):
+{{
+  "titulo_pt": "título traduzido para português natural",
+  "resumo_pt": "resumo em 2 frases em português explicando o que aconteceu e o impacto no mercado cripto",
+  "post_x": "post pronto para o X em português com emojis, máximo 240 caracteres, termine com #Bitcoin #Cripto e mais 1 hashtag relevante"
+}}"""
 
     try:
         r = requests.post(
@@ -164,67 +171,55 @@ Isso pode pressionar o Bitcoin no curto prazo. Fique atento! 👀
             json={
                 "model":       "grok-3-mini",
                 "messages":    [{"role": "user", "content": prompt}],
-                "max_tokens":  150,
-                "temperature": 0.8
+                "max_tokens":  300,
+                "temperature": 0.5
             },
-            timeout=15
+            timeout=20
         )
         r.raise_for_status()
-        post_text = r.json()["choices"][0]["message"]["content"].strip()
 
-        if len(post_text) > 240:
-            post_text = post_text[:237] + "..."
-
-        return f"{post_text}\n\n{news_item['link']}"
+        import json
+        text = r.json()["choices"][0]["message"]["content"].strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        return json.loads(text)
 
     except Exception as e:
-        print(f"❌ Erro Grok news: {e}")
-        return (
-            f"{emoji} {news_item['title'][:200]}\n\n"
-            f"{news_item['link']}\n\n"
-            f"#Bitcoin #Crypto #Mercado"
-        )
+        print(f"❌ Erro Grok: {e}")
+        return None
 
 
 # =========================
 # ENVIAR PARA TELEGRAM
 # =========================
 
-def translate_title(title):
-    if not GROK_API_KEY:
-        return title
-    try:
-        r = requests.post(
-            GROK_API_URL,
-            headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "grok-3-mini",
-                "messages": [{"role": "user", "content": f"Traduza para português do Brasil de forma natural. Responda APENAS com a tradução, sem explicações:\n\n{title}"}],
-                "max_tokens": 100,
-                "temperature": 0.3
-            },
-            timeout=10
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
-    except:
-        return title
-
-
-def send_news_to_telegram(post_text, sentiment, source, title):
+def send_news_to_telegram(news_item, grok_result, sentiment):
     from telegram_bot import send_telegram
 
-    emoji    = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
-    label    = "ALTA 🚀" if sentiment == "bullish" else "QUEDA ⚠️" if sentiment == "bearish" else "NEUTRO"
-    title_pt = translate_title(title)
+    emoji = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
+    label = "ALTA 🚀" if sentiment == "bullish" else "QUEDA ⚠️" if sentiment == "bearish" else "NEUTRO"
+
+    if grok_result:
+        titulo  = grok_result.get("titulo_pt", news_item["title"])
+        resumo  = grok_result.get("resumo_pt", "")
+        post_x  = grok_result.get("post_x", "")
+
+        # garante que o post tem o link
+        if news_item["link"] not in post_x:
+            post_x = f"{post_x}\n\n{news_item['link']}"
+    else:
+        # fallback sem Grok
+        titulo = news_item["title"]
+        resumo = news_item["summary"][:200]
+        post_x = f"{emoji} {titulo[:180]}\n\n{news_item['link']}\n\n#Bitcoin #Cripto #Mercado"
 
     msg = (
         f"{emoji} <b>NOTÍCIA — {label}</b>\n"
-        f"📰 {source}\n\n"
-        f"<b>{title_pt}</b>\n\n"
+        f"📰 {news_item['source']}\n\n"
+        f"<b>{titulo}</b>\n\n"
+        f"📝 {resumo}\n\n"
         f"─────────────────\n"
         f"✂️ <b>Copie e poste no X:</b>\n\n"
-        f"{post_text}"
+        f"<code>{post_x}</code>"
     )
 
     send_telegram(msg)
@@ -245,18 +240,13 @@ def run_news_radar():
     posted = 0
 
     for news in news_list:
-        sentiment = analyze_news(news["title"], news["summary"])
+        sentiment   = analyze_sentiment(news["title"], news["summary"])
+        grok_result = process_news_with_grok(news, sentiment)
 
-        # posta bullish e bearish, ignora sem impacto
-        if sentiment not in ["bullish", "bearish"]:
-            continue
+        send_news_to_telegram(news, grok_result, sentiment)
+        mark_as_posted(news["link"])
 
-        post_text = create_x_post(news, sentiment)
-        send_news_to_telegram(post_text, sentiment, news["source"], news["title"])
-
-        posted_cache.add(news["link"])
         posted += 1
-
         time.sleep(15)
 
         if posted >= 3:
