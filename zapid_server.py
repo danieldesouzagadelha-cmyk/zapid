@@ -42,12 +42,7 @@ def home():
 
 @app.route("/radar")
 def radar():
-    """
-    Rota principal — chamada pelo GitHub Action a cada hora.
-    Escaneia mercado, enriquece com Grok e notifica no Telegram.
-    """
     print("🛰️ /radar chamado")
-
     try:
         from market_scanner import run_radar
         from ai_predictor import enrich_signals
@@ -55,25 +50,14 @@ def radar():
         from telegram_bot import send_telegram, format_signal
         from trade_monitor import update_open_trades
 
-        # 1. monitorar trades abertos primeiro
         update_open_trades()
-
-        # 2. pegar portfolio atual do banco
         portfolio = get_portfolio()
-
-        # 3. rodar scanner
         signals = run_radar(portfolio)
-
-        # 4. enriquecer com Grok AI
         enriched = enrich_signals(signals)
 
-        # 5. notificar e salvar sinais relevantes
         notified = []
-
         for s in enriched:
             if s.get("type") in ["BUY", "SELL"]:
-
-                # salvar no banco
                 log_signal(
                     signal_type=s["type"],
                     asset=s.get("asset", ""),
@@ -82,13 +66,10 @@ def radar():
                     rsi=s.get("rsi"),
                     prediction=s.get("ai_prediction")
                 )
-
-                # enviar para o Telegram
                 send_telegram(format_signal(s))
                 notified.append(s)
 
         if not notified:
-            # só notifica WAIT uma vez por hora para não encher
             if signals and signals[0].get("type") == "WAIT":
                 send_telegram(format_signal(signals[0]))
 
@@ -105,7 +86,6 @@ def radar():
 
 @app.route("/signals")
 def signals():
-    """Últimos sinais do banco"""
     try:
         from database import get_recent_signals
         return jsonify(get_recent_signals(10))
@@ -115,7 +95,6 @@ def signals():
 
 @app.route("/trades")
 def trades():
-    """Trades abertos"""
     try:
         from database import get_open_trades
         return jsonify(get_open_trades())
@@ -125,7 +104,6 @@ def trades():
 
 @app.route("/performance")
 def performance():
-    """Estatísticas gerais"""
     try:
         from database import get_performance
         return jsonify(get_performance())
@@ -135,7 +113,6 @@ def performance():
 
 @app.route("/monitor")
 def monitor():
-    """Atualiza trades abertos manualmente"""
     try:
         from trade_monitor import update_open_trades
         closed = update_open_trades()
@@ -146,10 +123,6 @@ def monitor():
 
 @app.route("/buy", methods=["POST"])
 def register_buy():
-    """
-    Registra uma compra manualmente.
-    Body JSON: {"symbol": "BITCOIN", "entry": 95000}
-    """
     try:
         from database import log_trade
         from telegram_bot import send_telegram
@@ -193,11 +166,7 @@ def register_buy():
 # =========================
 
 def keep_alive():
-    """
-    Render free dorme após 15min de inatividade.
-    Esta thread faz uma request interna a cada 10min para manter vivo.
-    """
-    time.sleep(60)  # aguarda inicialização completa
+    time.sleep(60)
     while True:
         try:
             import requests as req
@@ -206,15 +175,23 @@ def keep_alive():
             print("💓 keep-alive ping")
         except:
             pass
-        time.sleep(600)  # 10 minutos
+        time.sleep(600)
 
 
 # =========================
 # START
 # =========================
 
-startup()
-threading.Thread(target=keep_alive, daemon=True).start()
+@app.before_request
+def before_first():
+    """Roda na primeira request — compatível com Gunicorn"""
+    global _started
+    if not _started:
+        _started = True
+        startup()
+        threading.Thread(target=keep_alive, daemon=True).start()
+
+_started = False
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
