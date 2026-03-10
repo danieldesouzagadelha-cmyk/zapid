@@ -52,7 +52,7 @@ def save_sent_news(data):
         json.dump(data, f)
 
 # =========================
-# BUSCAR NOTÍCIAS RSS
+# BUSCAR NOTÍCIAS
 # =========================
 
 def get_recent_news():
@@ -120,7 +120,7 @@ Descrição: {description}
     return chat.choices[0].message.content
 
 # =========================
-# IA CRIA POST PARA X
+# IA POST PARA X
 # =========================
 
 def generate_x_post(title, description):
@@ -130,10 +130,8 @@ def generate_x_post(title, description):
     prompt = f"""
 Crie um post para X com até 280 caracteres.
 
-Regras:
-- Comece com 🚨
-- Linguagem direta
-- Inclua hashtags
+Comece com 🚨
+Inclua hashtags.
 
 Título: {title}
 
@@ -155,7 +153,7 @@ Descrição: {description}
     return chat.choices[0].message.content
 
 # =========================
-# ROTA RADAR
+# RADAR DE NOTÍCIAS
 # =========================
 
 @app.route("/radar")
@@ -164,7 +162,7 @@ def radar():
     news = get_recent_news()
 
     if not news:
-        return "Sem notícias recentes."
+        return "Sem notícias novas."
 
     detailed = generate_detailed_news(news["title"], news["description"])
 
@@ -179,17 +177,63 @@ def radar():
 
 {x_post}
 
-📰 Fonte: {news['source']}
-📅 {news['date']}
+Fonte: {news['source']}
+Data: {news['date']}
 """
 
     send_telegram(message)
 
     state = load_sent_news()
+
     state["sent_ids"].append(news["id"])
+
     save_sent_news(state)
 
     return "Radar executado."
+
+# =========================
+# RADAR CRYPTO
+# =========================
+
+def get_price(symbol):
+
+    url = "https://api.binance.com/api/v3/ticker/price"
+
+    params = {"symbol": symbol}
+
+    r = requests.get(url, params=params)
+
+    data = r.json()
+
+    return float(data["price"])
+
+@app.route("/crypto")
+def crypto():
+
+    symbols = [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "BNBUSDT",
+        "XRPUSDT",
+        "ADAUSDT",
+        "AVAXUSDT",
+        "LINKUSDT"
+    ]
+
+    lines = []
+
+    for symbol in symbols:
+
+        price = get_price(symbol)
+
+        lines.append(f"{symbol}: ${price}")
+
+    message = "📡 ZAPID CRYPTO RADAR\n\n" + "\n".join(lines)
+
+    send_telegram(message)
+
+    return "Crypto radar executado."
 
 # =========================
 # HOME
@@ -197,7 +241,7 @@ def radar():
 
 @app.route("/")
 def home():
-    return "ZapID RSS Radar Online 🚀"
+    return "ZapID Global Radar Online 🚀"
 
 # =========================
 # RUN
