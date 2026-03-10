@@ -1,120 +1,63 @@
 import os
-import requests
-import logging
-import threading
 import time
-
-from flask import Flask
-from market_scanner import run_radar
+import threading
+from flask import Flask, jsonify
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# -----------------------------
+# STATUS DO RADAR
+# -----------------------------
 
+radar_status = {
+    "status": "online",
+    "engine": "ZapID AI Radar",
+    "version": "1.0",
+    "signals": []
+}
 
-def send_telegram(message):
+# -----------------------------
+# COLETOR SIMULADO DE SINAIS
+# -----------------------------
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
-
-    requests.post(url, data=payload)
-
-
-# =========================
-# EXECUTAR RADAR
-# =========================
-
-def execute_crypto_radar():
-
-    logging.info("📡 Executando radar cripto...")
-
-    signals = run_radar()
-
-    if not signals:
-        return
-
-    for s in signals:
-
-        if s["type"] == "BUY":
-
-            message = f"""
-🟢 ZAPID AI SIGNAL
-
-AÇÃO: COMPRAR
-
-Moeda: {s['asset']}
-
-Preço: {s['price']}
-
-Alvo: {s['target']} (+6%)
-
-Score técnico: {s['score']}
-"""
-
-        else:
-
-            message = f"""
-🔴 ZAPID AI SIGNAL
-
-AÇÃO: VENDER
-
-Moeda: {s['asset']}
-
-Preço atual: {s['price']}
-
-Lucro aproximado: +6%
-"""
-
-        send_telegram(message)
-
-
-# =========================
-# LOOP AUTOMÁTICO
-# =========================
-
-def radar_loop():
-
+def radar_collector():
     while True:
+        signal = {
+            "market": "BTC",
+            "action": "monitoring",
+            "confidence": 0.73
+        }
 
-        try:
-            execute_crypto_radar()
+        radar_status["signals"].append(signal)
 
-        except Exception as e:
-            logging.error(e)
+        # mantém só últimos 10 sinais
+        radar_status["signals"] = radar_status["signals"][-10:]
 
-        time.sleep(900)
+        time.sleep(10)
 
+# thread do radar
+threading.Thread(target=radar_collector, daemon=True).start()
 
-def start_background_radar():
-
-    thread = threading.Thread(target=radar_loop)
-    thread.daemon = True
-    thread.start()
-
+# -----------------------------
+# ROTAS
+# -----------------------------
 
 @app.route("/")
 def home():
-    return "ZapID Global Radar Online 🚀"
+    return "🚀 ZapID AI Radar is running"
 
+@app.route("/status")
+def status():
+    return jsonify(radar_status)
 
-@app.route("/crypto_radar")
-def manual_radar():
+@app.route("/signals")
+def signals():
+    return jsonify(radar_status["signals"])
 
-    execute_crypto_radar()
-
-    return "Radar executado."
-
+# -----------------------------
+# START SERVER
+# -----------------------------
 
 if __name__ == "__main__":
-
-    start_background_radar()
-
     port = int(os.environ.get("PORT", 10000))
-
     app.run(host="0.0.0.0", port=port)
