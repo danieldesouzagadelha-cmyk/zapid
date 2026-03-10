@@ -1,61 +1,29 @@
 import requests
 import pandas as pd
-import json
-import os
-
-TRADES_FILE = "active_trades.json"
-
 
 # =========================
-# UTIL
-# =========================
-
-def load_trades():
-
-    if not os.path.exists(TRADES_FILE):
-        return {}
-
-    with open(TRADES_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_trades(data):
-
-    with open(TRADES_FILE, "w") as f:
-        json.dump(data, f)
-
-
-# =========================
-# PEGAR TOP COINS
+# PEGAR TOP MOEDAS
 # =========================
 
 def get_top_coins():
 
-    try:
+    url = "https://api.coingecko.com/api/v3/coins/markets"
 
-        url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "volume_desc",
+        "per_page": 25,
+        "page": 1
+    }
 
-        params = {
-            "vs_currency": "usd",
-            "order": "volume_desc",
-            "per_page": 30,
-            "page": 1
-        }
+    r = requests.get(url, params=params)
 
-        r = requests.get(url, params=params, timeout=10)
+    data = r.json()
 
-        data = r.json()
-
-        if not isinstance(data, list):
-            print("Erro CoinGecko:", data)
-            return []
-
-        return data
-
-    except Exception as e:
-
-        print("Erro API:", e)
+    if not isinstance(data, list):
         return []
+
+    return data
 
 
 # =========================
@@ -107,11 +75,11 @@ def get_ohlc(coin):
             "days": 1
         }
 
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params)
 
         data = r.json()
 
-        if not isinstance(data, list) or len(data) == 0:
+        if not isinstance(data, list):
             return None
 
         df = pd.DataFrame(data, columns=[
@@ -133,10 +101,11 @@ def get_ohlc(coin):
 # BUY SCORE
 # =========================
 
-def buy_score(df):
+def calculate_buy_score(df):
 
     close = df["close"]
 
+    df["EMA20"] = ema(close, 20)
     df["EMA50"] = ema(close, 50)
     df["EMA200"] = ema(close, 200)
 
@@ -148,12 +117,14 @@ def buy_score(df):
 
     price = close.iloc[-1]
 
+    # tendência
     if price > df["EMA200"].iloc[-1]:
         score += 2
 
     if df["EMA50"].iloc[-1] > df["EMA200"].iloc[-1]:
         score += 2
 
+    # rsi
     rsi_val = df["RSI"].iloc[-1]
 
     if 40 < rsi_val < 60:
@@ -162,6 +133,7 @@ def buy_score(df):
     if rsi_val < 30:
         score += 2
 
+    # macd
     if macd_line.iloc[-1] > signal.iloc[-1]:
         score += 2
 
@@ -175,7 +147,7 @@ def buy_score(df):
 # SELL SCORE
 # =========================
 
-def sell_score(df):
+def calculate_sell_score(df):
 
     close = df["close"]
 
@@ -200,16 +172,14 @@ def sell_score(df):
 
 
 # =========================
-# RADAR
+# RADAR PRINCIPAL
 # =========================
 
 def run_radar():
 
-    print("📡 ZAPID AI MARKET SCANNER")
+    print("📡 ZAPID PRO MARKET SCANNER")
 
     coins = get_top_coins()
-
-    trades = load_trades()
 
     signals = []
 
@@ -217,9 +187,6 @@ def run_radar():
         return []
 
     for coin in coins:
-
-        if not isinstance(coin, dict):
-            continue
 
         coin_id = coin.get("id")
 
@@ -233,52 +200,44 @@ def run_radar():
 
         price = df["close"].iloc[-1]
 
+        buy_score = calculate_buy_score(df)
+        sell_score = calculate_sell_score(df)
+
         # =====================
         # COMPRA
         # =====================
 
-        if coin_id not in trades:
+        if buy_score >= 10:
 
-            score = buy_score(df)
-
-            if score >= 10:
-
-                entry = price
-
-                trades[coin_id] = {
-                    "entry": entry,
-                    "tp": entry * 1.06,
-                    "stop": entry * 0.97
-                }
-
-                signals.append({
-                    "type": "BUY",
-                    "asset": coin_id.upper(),
-                    "price": round(entry, 4),
-                    "target": round(entry * 1.06, 4),
-                    "score": score
-                })
+            signals.append({
+                "type": "BUY",
+                "asset": coin_id.upper(),
+                "price": round(price, 4)
+            })
 
         # =====================
         # VENDA
         # =====================
 
+        elif sell_score >= 7:
+
+            signals.append({
+                "type": "SELL",
+                "asset": coin_id.upper(),
+                "price": round(price, 4)
+            })
+
+        # =====================
+        # ESPERAR
+        # =====================
+
         else:
 
-            trade = trades[coin_id]
+            signals.append({
+                "type": "WAIT",
+                "asset": coin_id.upper(),
+                "price": round(price, 4)
+            })
 
-            score = sell_score(df)
+    return signals[:5]
 
-            if price >= trade["tp"] or score >= 7:
-
-                signals.append({
-                    "type": "SELL",
-                    "asset": coin_id.upper(),
-                    "price": round(price, 4)
-                })
-
-                del trades[coin_id]
-
-    save_trades(trades)
-
-    return signals
