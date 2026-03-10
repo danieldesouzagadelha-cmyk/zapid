@@ -1,0 +1,16 @@
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "MATICUSDT",
+    "DOGEUSDT"
+]
+
+TARGET_PROFIT = 0.05
+STOP_LOSS = -0.02
+FEE_RATE = 0.002
