@@ -1,5 +1,7 @@
 flask
-requests
-groq
 gunicorn
+requests
 feedparser
+groq
+pandas
+numpy
