@@ -2,23 +2,35 @@ import requests
 import pandas as pd
 import numpy as np
 
-# moedas monitoradas
-COINS = [
-    "bitcoin",
-    "ethereum",
-    "solana",
-    "binancecoin",
-    "chainlink",
-    "avalanche-2",
-    "injective-protocol",
-    "arbitrum",
-    "optimism",
-    "render-token"
-]
+# =========================
+# PEGAR TOP 200 MOEDAS
+# =========================
 
-# -----------------------------
+def get_top_coins():
+
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+
+    params = {
+        "vs_currency": "usd",
+        "order": "volume_desc",
+        "per_page": 200,
+        "page": 1,
+        "sparkline": "false"
+    }
+
+    r = requests.get(url, params=params)
+
+    return r.json()
+
+
+# =========================
 # INDICADORES
-# -----------------------------
+# =========================
+
+def ema(data, period):
+
+    return data.ewm(span=period, adjust=False).mean()
+
 
 def calculate_rsi(data, period=14):
 
@@ -37,14 +49,9 @@ def calculate_rsi(data, period=14):
     return rsi
 
 
-def ema(data, period):
-
-    return data.ewm(span=period, adjust=False).mean()
-
-
-# -----------------------------
-# OHLC DATA
-# -----------------------------
+# =========================
+# OHLC
+# =========================
 
 def get_ohlc(coin):
 
@@ -55,38 +62,30 @@ def get_ohlc(coin):
         "days": 1
     }
 
-    try:
+    r = requests.get(url, params=params)
 
-        r = requests.get(url, params=params, timeout=10)
+    data = r.json()
 
-        data = r.json()
+    df = pd.DataFrame(data, columns=[
+        "time",
+        "open",
+        "high",
+        "low",
+        "close"
+    ])
 
-        df = pd.DataFrame(data, columns=[
-            "time",
-            "open",
-            "high",
-            "low",
-            "close"
-        ])
-
-        return df
-
-    except Exception as e:
-
-        print("Erro OHLC:", e)
-
-        return None
+    return df
 
 
-# -----------------------------
-# ANALISADOR DE TRADE
-# -----------------------------
+# =========================
+# ANALISE TECNICA
+# =========================
 
 def analyze_coin(coin):
 
     df = get_ohlc(coin)
 
-    if df is None or len(df) < 50:
+    if len(df) < 50:
         return None
 
     close = df["close"]
@@ -105,15 +104,12 @@ def analyze_coin(coin):
 
     score = 0
 
-    # tendência
     if ema20 > ema50:
         score += 2
 
-    # pullback
     if price <= ema20 * 1.01:
         score += 2
 
-    # rsi recuperação
     if rsi < 45:
         score += 2
 
@@ -126,31 +122,48 @@ def analyze_coin(coin):
         stop = price * 0.97
 
         return {
-            "asset": coin,
-            "entry": round(entry, 2),
-            "target": round(target, 2),
-            "stop": round(stop, 2),
+            "asset": coin.upper(),
+            "entry": round(entry, 4),
+            "target": round(target, 4),
+            "stop": round(stop, 4),
             "confidence": confidence
         }
 
     return None
 
 
-# -----------------------------
+# =========================
 # RADAR PRINCIPAL
-# -----------------------------
+# =========================
 
 def run_radar():
 
-    print("📡 ZAPID AI SPOT TRADING SCANNER")
+    print("📡 ZAPID AI MARKET SCANNER")
+
+    coins = get_top_coins()
+
+    candidates = []
+
+    # filtro inicial
+    for coin in coins:
+
+        change = coin["price_change_percentage_24h"]
+
+        if change and abs(change) > 3:
+
+            candidates.append(coin["id"])
+
+    candidates = candidates[:20]
 
     opportunities = []
 
-    for coin in COINS:
+    for coin in candidates:
 
         trade = analyze_coin(coin)
 
         if trade:
             opportunities.append(trade)
 
-    return opportunities
+    opportunities.sort(key=lambda x: x["confidence"], reverse=True)
+
+    return opportunities[:5]
