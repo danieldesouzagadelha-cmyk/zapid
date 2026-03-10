@@ -1,6 +1,5 @@
 import requests
 import pandas as pd
-import numpy as np
 
 # =========================
 # PEGAR TOP 200 MOEDAS
@@ -18,10 +17,23 @@ def get_top_coins():
         "sparkline": "false"
     }
 
-    r = requests.get(url, params=params)
+    try:
 
-    return r.json()
+        r = requests.get(url, params=params, timeout=10)
 
+        data = r.json()
+
+        if not isinstance(data, list):
+            print("Erro CoinGecko:", data)
+            return []
+
+        return data
+
+    except Exception as e:
+
+        print("Erro API:", e)
+
+        return []
 
 # =========================
 # INDICADORES
@@ -62,19 +74,28 @@ def get_ohlc(coin):
         "days": 1
     }
 
-    r = requests.get(url, params=params)
+    try:
 
-    data = r.json()
+        r = requests.get(url, params=params, timeout=10)
 
-    df = pd.DataFrame(data, columns=[
-        "time",
-        "open",
-        "high",
-        "low",
-        "close"
-    ])
+        data = r.json()
 
-    return df
+        if not isinstance(data, list):
+            return None
+
+        df = pd.DataFrame(data, columns=[
+            "time",
+            "open",
+            "high",
+            "low",
+            "close"
+        ])
+
+        return df
+
+    except:
+
+        return None
 
 
 # =========================
@@ -85,7 +106,7 @@ def analyze_coin(coin):
 
     df = get_ohlc(coin)
 
-    if len(df) < 50:
+    if df is None or len(df) < 50:
         return None
 
     close = df["close"]
@@ -142,12 +163,14 @@ def run_radar():
 
     coins = get_top_coins()
 
+    if not coins:
+        return []
+
     candidates = []
 
-    # filtro inicial
     for coin in coins:
 
-        change = coin["price_change_percentage_24h"]
+        change = coin.get("price_change_percentage_24h")
 
         if change and abs(change) > 3:
 
@@ -167,3 +190,4 @@ def run_radar():
     opportunities.sort(key=lambda x: x["confidence"], reverse=True)
 
     return opportunities[:5]
+
