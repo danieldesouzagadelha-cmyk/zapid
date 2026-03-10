@@ -1,3 +1,4 @@
+
 import os
 import time
 import threading
@@ -7,34 +8,10 @@ from config import TARGET_PROFIT, STOP_LOSS, FEE_RATE
 app = Flask(__name__)
 
 # =========================
-# INICIALIZAÇÃO
-# =========================
-
-def startup():
-    try:
-        from database import setup_db
-        setup_db()
-    except Exception as e:
-        print(f"⚠️ DB setup error: {e}")
-
-    try:
-        from telegram_bot import send_telegram
-        send_telegram(
-            "🚀 <b>ZapID Pro está online!</b>\n"
-            "📡 Radar de mercado: a cada 1h\n"
-            "📰 Radar de notícias: a cada 1h\n"
-            "🐦 Posts automáticos no X ativados"
-        )
-    except Exception as e:
-        print(f"⚠️ Telegram start error: {e}")
-
-
-# =========================
 # LÓGICA CENTRAL DO SCAN
 # =========================
 
 def run_scan():
-    """Scan de mercado completo"""
     try:
         from market_scanner import run_radar
         from ai_predictor import enrich_signals
@@ -43,7 +20,6 @@ def run_scan():
         from trade_monitor import update_open_trades
 
         update_open_trades()
-
         portfolio = get_portfolio()
         signals   = run_radar(portfolio)
         enriched  = enrich_signals(signals)
@@ -51,20 +27,12 @@ def run_scan():
         notified = []
         for s in enriched:
             if s.get("type") in ["BUY", "SELL"]:
-                log_signal(
-                    signal_type=s["type"],
-                    asset=s.get("asset", ""),
-                    price=s.get("price", 0),
-                    score=s.get("score"),
-                    rsi=s.get("rsi"),
-                    prediction=s.get("ai_prediction")
-                )
+                log_signal(s)
                 send_telegram(format_signal(s))
                 notified.append(s)
 
-        if not notified:
-            if signals and signals[0].get("type") == "WAIT":
-                send_telegram(format_signal(signals[0]))
+        if not notified and signals and signals[0].get("type") == "WAIT":
+            send_telegram(format_signal(signals[0]))
 
         print(f"✅ Scan concluído — {len(notified)} sinal(is)")
         return {"status": "ok", "signals": len(notified), "data": enriched}
@@ -81,29 +49,24 @@ def run_scan():
 @app.route("/")
 def home():
     return jsonify({
-        "status": "online",
-        "engine": "ZapID Pro",
-        "version": "2.0",
+        "status":    "online",
+        "engine":    "ZapID Pro",
+        "version":   "2.0",
         "endpoints": ["/radar", "/news", "/signals", "/performance", "/trades", "/monitor"]
     })
 
-
 @app.route("/radar")
 def radar():
-    result = run_scan()
-    return jsonify(result)
-
+    return jsonify(run_scan())
 
 @app.route("/news")
 def news():
-    """Dispara o radar de notícias manualmente"""
     try:
         from news_radar import run_news_radar
         posted = run_news_radar()
         return jsonify({"status": "ok", "posted": posted})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/signals")
 def signals():
@@ -113,7 +76,6 @@ def signals():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/trades")
 def trades():
     try:
@@ -121,7 +83,6 @@ def trades():
         return jsonify(get_open_trades())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/performance")
 def performance():
@@ -131,7 +92,6 @@ def performance():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/monitor")
 def monitor():
     try:
@@ -140,7 +100,6 @@ def monitor():
         return jsonify({"closed": len(closed), "trades": closed})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/buy", methods=["POST"])
 def register_buy():
@@ -153,50 +112,39 @@ def register_buy():
         entry  = float(data.get("entry", 0))
 
         if not symbol or not entry:
-            return jsonify({"error": "symbol e entry são obrigatórios"}), 400
+            return jsonify({"error": "symbol e entry obrigatórios"}), 400
 
-        target = round(entry * (1 + TARGET_PROFIT + FEE_RATE * 2), 6)
-        stop   = round(entry * (1 - STOP_LOSS), 6)
-
+        target   = round(entry * (1 + TARGET_PROFIT + FEE_RATE * 2), 6)
+        stop     = round(entry * (1 - STOP_LOSS), 6)
         trade_id = log_trade(symbol, entry, target, stop)
 
         send_telegram(
             f"📥 <b>COMPRA REGISTRADA</b>\n\n"
             f"🪙 {symbol}\n"
             f"💲 Entrada: ${entry:,.4f}\n"
-            f"🎯 Target:  ${target:,.4f} (+{TARGET_PROFIT*100:.0f}%)\n"
-            f"🛡️ Stop:    ${stop:,.4f} (-{STOP_LOSS*100:.0f}%)\n"
+            f"🎯 Target:  ${target:,.4f}\n"
+            f"🛡️ Stop:    ${stop:,.4f}\n"
             f"🆔 Trade ID: {trade_id}"
         )
-
-        return jsonify({
-            "trade_id": trade_id,
-            "symbol": symbol,
-            "entry": entry,
-            "target": target,
-            "stop": stop
-        })
+        return jsonify({"trade_id": trade_id, "symbol": symbol, "entry": entry, "target": target, "stop": stop})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # =========================
-# THREADS AUTOMÁTICAS
+# THREADS
 # =========================
 
 def auto_radar():
-    """Radar de mercado — 1x por hora"""
     time.sleep(30)
     while True:
         print("⏰ Auto-radar de mercado disparado!")
         run_scan()
         time.sleep(3600)
 
-
 def auto_news():
-    """Radar de notícias — 1x por hora (offset 30min do radar)"""
-    time.sleep(1800)  # começa 30 minutos depois do radar
+    time.sleep(1800)
     while True:
         print("📰 Auto-radar de notícias disparado!")
         try:
@@ -206,10 +154,8 @@ def auto_news():
             print(f"❌ Erro auto_news: {e}")
         time.sleep(3600)
 
-
 def keep_alive():
-    """Ping interno a cada 10min para o Render não dormir"""
-    time.sleep(60)
+    time.sleep(120)
     while True:
         try:
             import requests as req
@@ -222,20 +168,33 @@ def keep_alive():
 
 
 # =========================
-# START
+# STARTUP — roda ao importar
 # =========================
 
-@app.before_request
-def before_first():
-    global _started
-    if not _started:
-        _started = True
-        startup()
-        threading.Thread(target=auto_radar,  daemon=True).start()
-        threading.Thread(target=auto_news,   daemon=True).start()
-        threading.Thread(target=keep_alive,  daemon=True).start()
+def startup():
+    try:
+        from database import setup_db
+        setup_db()
+    except Exception as e:
+        print(f"⚠️ DB setup error: {e}")
 
-_started = False
+    try:
+        from telegram_bot import send_telegram
+        send_telegram(
+            "🚀 <b>ZapID Pro está online!</b>\n"
+            "📊 Radar de mercado: a cada 1h\n"
+            "📰 Radar de notícias: a cada 1h\n"
+        )
+    except Exception as e:
+        print(f"⚠️ Telegram error: {e}")
+
+    threading.Thread(target=auto_radar, daemon=True).start()
+    threading.Thread(target=auto_news,  daemon=True).start()
+    threading.Thread(target=keep_alive, daemon=True).start()
+    print("🟢 Threads iniciadas")
+
+# chama startup direto na importação pelo gunicorn
+startup()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
