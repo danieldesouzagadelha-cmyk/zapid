@@ -12,28 +12,20 @@ BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 def send_telegram(message, chat_id=None, parse_mode="HTML"):
     if not TELEGRAM_BOT_TOKEN:
-        print("⚠️ TELEGRAM_BOT_TOKEN não configurado")
         return
-
     cid = chat_id or TELEGRAM_CHAT_ID
-    url = f"{BASE_URL}/sendMessage"
-
     try:
-        r = requests.post(url, json={
-            "chat_id": cid,
-            "text": message,
+        requests.post(f"{BASE_URL}/sendMessage", json={
+            "chat_id":    cid,
+            "text":       message,
             "parse_mode": parse_mode
         }, timeout=10)
-
-        if not r.ok:
-            print(f"❌ Telegram erro: {r.text}")
-
     except Exception as e:
         print(f"❌ Telegram send error: {e}")
 
 
 # =========================
-# FORMATAR SINAIS
+# FORMATAR SINAL
 # =========================
 
 def format_signal(signal):
@@ -41,192 +33,93 @@ def format_signal(signal):
 
     if t == "WAIT":
         return (
-            f"⏸ <b>AGUARDAR</b>\n"
-            f"{signal.get('message', 'Sem oportunidade clara')}\n"
-            f"Melhor candidato: {signal.get('top', 'N/A')} (score {signal.get('score', 0)})"
+            f"⏸ <b>SEM SINAL FORTE</b>\n\n"
+            f"Nenhum ativo atingiu score mínimo (10/15)\n\n"
+            f"Melhor candidato: <b>{signal.get('top', 'N/A')}</b>\n"
+            f"Score: {signal.get('score', 0)}/15\n\n"
+            f"⏳ Próxima análise em 1h"
         )
 
-    emoji = "🟢" if t == "BUY" else "🔴"
-    action = "COMPRA" if t == "BUY" else "VENDA"
+    if t == "BUY":
+        score      = signal.get("score", 0)
+        max_score  = signal.get("max_score", 15)
+        score_bar  = "🟩" * score + "⬜" * (max_score - score)
 
-    lines = [
-        f"{emoji} <b>SINAL DE {action}</b>",
-        f"",
-        f"🪙 <b>{signal.get('asset')}</b>",
-        f"💲 Preço: ${signal.get('price', 0):,.4f}",
-        f"📊 Score: {signal.get('score', 0)}/16",
-        f"📈 RSI: {signal.get('rsi', 'N/A')}",
-    ]
+        # força do sinal
+        if score >= 13:
+            strength = "🔥 MUITO FORTE"
+        elif score >= 11:
+            strength = "💪 FORTE"
+        else:
+            strength = "✅ MODERADO"
 
-    if signal.get("profit") is not None:
-        lines.append(f"💰 Lucro atual: +{signal['profit']:.2f}%")
+        # indicadores que passaram
+        indicators = signal.get("indicators", [])
+        ind_text   = "\n".join(indicators) if indicators else "N/A"
 
-    # análise Grok
-    if signal.get("ai_prediction"):
-        lines += [
+        lines = [
+            f"🟢 <b>SINAL DE COMPRA — SPOT BINANCE</b>",
             f"",
-            f"🤖 <b>Grok AI:</b> {signal['ai_prediction']}",
-            f"🎯 Confiança: {signal.get('ai_confidence', 0):.0f}%",
-            f"⚠️ Risco: {signal.get('ai_risk', 'N/A')}",
-            f"💬 {signal.get('ai_reasoning', '')}",
+            f"🪙 <b>{signal.get('asset')}</b>",
+            f"",
+            f"📊 Score: <b>{score}/{max_score}</b> {strength}",
+            f"{score_bar}",
+            f"",
+            f"💲 <b>Entrada:</b>  ${signal.get('entry', 0):,.4f}",
+            f"🎯 <b>Target:</b>   ${signal.get('target', 0):,.4f}  (+6%)",
+            f"🛡️ <b>Stop Loss:</b> ${signal.get('stop', 0):,.4f}  (-3%)",
+            f"⚖️ <b>Risco/Retorno:</b> 1:{signal.get('rr_ratio', 2)}",
+            f"",
+            f"📈 Indicadores confirmados:",
+            f"{ind_text}",
+            f"",
+            f"📉 RSI: {signal.get('rsi', 'N/A')} | ADX: {signal.get('adx', 'N/A')}",
+            f"🌍 Tendência diária: {signal.get('daily_trend', 'N/A')}",
         ]
 
-        if t == "BUY":
-            lines.append(f"🎯 TP sugerido: +{signal.get('ai_tp', 6):.1f}%")
-            lines.append(f"🛡️ SL sugerido: -{signal.get('ai_sl', 3):.1f}%")
+        if signal.get("ai_prediction"):
+            lines += [
+                f"",
+                f"🤖 <b>Grok AI:</b> {signal['ai_prediction']}",
+                f"🎯 Confiança: {signal.get('ai_confidence', 0):.0f}%",
+                f"💬 {signal.get('ai_reasoning', '')}",
+            ]
 
-    return "\n".join(lines)
+        lines += [
+            f"",
+            f"⚠️ <i>Este é um sinal técnico, não conselho financeiro.</i>",
+            f"📝 Registrado no histórico para análise de acerto."
+        ]
 
+        return "\n".join(lines)
+
+    return str(signal)
+
+
+# =========================
+# FORMATAR PERFORMANCE
+# =========================
 
 def format_performance(perf):
+    wins   = perf.get("wins", 0)
+    losses = perf.get("losses", 0)
+    total  = wins + losses
+    open_t = perf.get("open_trades", 0)
+
+    # barra visual de winrate
+    wr = perf.get("winrate", 0)
+    filled = int(wr / 10)
+    wr_bar = "🟩" * filled + "⬜" * (10 - filled)
+
     return (
-        f"📊 <b>PERFORMANCE ZAPID</b>\n\n"
-        f"✅ Wins:    {perf.get('wins', 0)}\n"
-        f"❌ Losses:  {perf.get('losses', 0)}\n"
-        f"📂 Abertos: {perf.get('open_trades', 0)}\n"
-        f"🏆 Winrate: {perf.get('winrate', 0):.1f}%\n"
-        f"💰 Lucro médio: {perf.get('avg_profit') or 0:.2f}%\n"
-        f"📈 Lucro total:  {perf.get('total_profit') or 0:.2f}%"
+        f"📊 <b>HISTÓRICO DE SINAIS — 30 DIAS</b>\n\n"
+        f"✅ Wins:     {wins}\n"
+        f"❌ Losses:   {losses}\n"
+        f"📂 Abertos:  {open_t}\n"
+        f"📋 Total:    {total}\n\n"
+        f"🏆 <b>Winrate: {wr:.1f}%</b>\n"
+        f"{wr_bar}\n\n"
+        f"💰 Lucro médio por trade: {perf.get('avg_profit') or 0:.2f}%\n"
+        f"📈 Lucro acumulado 30d:   {perf.get('total_profit') or 0:.2f}%\n\n"
+        f"{'🟢 Performance positiva!' if wr >= 60 else '🔴 Ainda calibrando o modelo...'}"
     )
-
-
-# =========================
-# RECEBER COMANDOS
-# =========================
-
-last_update_id = 0
-
-def get_updates():
-    global last_update_id
-    try:
-        r = requests.get(f"{BASE_URL}/getUpdates", params={
-            "offset": last_update_id + 1,
-            "timeout": 30
-        }, timeout=35)
-
-        data = r.json()
-        return data.get("result", [])
-
-    except Exception as e:
-        print(f"❌ getUpdates error: {e}")
-        return []
-
-
-def handle_command(text, chat_id):
-    """Processa comandos recebidos no Telegram"""
-    # importações aqui para evitar circular imports
-    from market_scanner import run_radar
-    from ai_predictor import enrich_signals
-    from database import get_open_trades, get_performance, get_portfolio
-    from trade_monitor import update_open_trades
-
-    text = text.strip().lower()
-    print(f"📨 Comando recebido: {text}")
-
-    # /start ou /help
-    if text in ["/start", "/help"]:
-        send_telegram(
-            "👋 <b>ZapID Pro — Comandos disponíveis:</b>\n\n"
-            "/radar — Escanear mercado agora\n"
-            "/carteira — Ver trades abertos\n"
-            "/performance — Ver resultados\n"
-            "/monitor — Atualizar trades abertos\n"
-            "/status — Status do bot",
-            chat_id=chat_id
-        )
-
-    # /radar
-    elif text == "/radar":
-        send_telegram("🔍 Escaneando mercado... aguarde ~30s", chat_id=chat_id)
-        try:
-            portfolio = get_portfolio()
-            signals   = run_radar(portfolio)
-            enriched  = enrich_signals(signals)
-
-            send_telegram(f"📡 <b>{len(enriched)} sinal(is) encontrado(s):</b>", chat_id=chat_id)
-            for s in enriched:
-                send_telegram(format_signal(s), chat_id=chat_id)
-        except Exception as e:
-            send_telegram(f"❌ Erro no radar: {e}", chat_id=chat_id)
-
-    # /carteira
-    elif text == "/carteira":
-        try:
-            trades = get_open_trades()
-            if not trades:
-                send_telegram("📭 Nenhum trade aberto", chat_id=chat_id)
-                return
-
-            msg = "💼 <b>TRADES ABERTOS:</b>\n\n"
-            for t in trades:
-                msg += (
-                    f"🪙 {t['symbol']}\n"
-                    f"   Entrada: ${float(t['entry_price']):.4f}\n"
-                    f"   Target:  ${float(t['target_price']):.4f}\n"
-                    f"   Stop:    ${float(t['stop_price']):.4f}\n\n"
-                )
-            send_telegram(msg, chat_id=chat_id)
-        except Exception as e:
-            send_telegram(f"❌ Erro: {e}", chat_id=chat_id)
-
-    # /performance
-    elif text == "/performance":
-        try:
-            perf = get_performance()
-            send_telegram(format_performance(perf), chat_id=chat_id)
-        except Exception as e:
-            send_telegram(f"❌ Erro: {e}", chat_id=chat_id)
-
-    # /monitor
-    elif text == "/monitor":
-        send_telegram("🔄 Verificando trades abertos...", chat_id=chat_id)
-        try:
-            closed = update_open_trades()
-            if not closed:
-                send_telegram("✅ Nenhum trade fechado nesta verificação", chat_id=chat_id)
-        except Exception as e:
-            send_telegram(f"❌ Erro: {e}", chat_id=chat_id)
-
-    # /status
-    elif text == "/status":
-        send_telegram(
-            "✅ <b>ZapID Pro está online</b>\n"
-            "🔄 Radar automático a cada hora\n"
-            "📡 CoinGecko + Binance conectados\n"
-            "🤖 Grok AI ativo",
-            chat_id=chat_id
-        )
-
-    else:
-        send_telegram("❓ Comando não reconhecido. Use /help", chat_id=chat_id)
-
-
-def poll_commands():
-    """Loop de polling para receber comandos do Telegram"""
-    global last_update_id
-
-    print("🤖 Bot Telegram iniciado — aguardando comandos...")
-
-    while True:
-        try:
-            updates = get_updates()
-
-            for update in updates:
-                last_update_id = update["update_id"]
-                msg = update.get("message", {})
-                text = msg.get("text", "")
-                chat_id = msg.get("chat", {}).get("id")
-
-                if text and chat_id:
-                    handle_command(text, chat_id)
-
-        except Exception as e:
-            print(f"❌ Poll error: {e}")
-
-        time.sleep(2)
-
-
-def start_bot():
-    """Inicia o bot em thread separada"""
-    t = threading.Thread(target=poll_commands, daemon=True)
-    t.start()
