@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from flask import Flask
 from groq import Groq
 
+from market_scanner import run_radar
+
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -52,7 +54,7 @@ def save_sent_news(data):
         json.dump(data, f)
 
 # =========================
-# BUSCAR NOTÍCIAS
+# BUSCAR RSS
 # =========================
 
 def get_recent_news():
@@ -195,43 +197,10 @@ Data: {news['date']}
 # RADAR CRYPTO
 # =========================
 
-def get_price(symbol):
+@app.route("/crypto_radar")
+def crypto_radar():
 
-    url = "https://api.binance.com/api/v3/ticker/price"
-
-    params = {"symbol": symbol}
-
-    r = requests.get(url, params=params)
-
-    data = r.json()
-
-    return float(data["price"])
-
-@app.route("/crypto")
-def crypto():
-
-    symbols = [
-        "BTCUSDT",
-        "ETHUSDT",
-        "SOLUSDT",
-        "BNBUSDT",
-        "XRPUSDT",
-        "ADAUSDT",
-        "AVAXUSDT",
-        "LINKUSDT"
-    ]
-
-    lines = []
-
-    for symbol in symbols:
-
-        price = get_price(symbol)
-
-        lines.append(f"{symbol}: ${price}")
-
-    message = "📡 ZAPID CRYPTO RADAR\n\n" + "\n".join(lines)
-
-    send_telegram(message)
+    run_radar()
 
     return "Crypto radar executado."
 
