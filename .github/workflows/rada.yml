@@ -1,0 +1,16 @@
+name: ZapID Radar
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # toda hora
+  workflow_dispatch:        # permite rodar manualmente
+
+jobs:
+  call-radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📡 Chamar Radar ZapID
+        run: |
+          echo "🚀 Iniciando scan do mercado..."
+          curl -f https://zapid-cdu7.onrender.com/radar
+          echo "✅ Radar executado com sucesso"
