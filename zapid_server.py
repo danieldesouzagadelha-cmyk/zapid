@@ -1,15 +1,10 @@
 import os
 import requests
-import json
 import logging
-import feedparser
 import threading
 import time
 
-from datetime import datetime, timedelta
 from flask import Flask
-from groq import Groq
-
 from market_scanner import run_radar
 
 app = Flask(__name__)
@@ -17,18 +12,7 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-STATE_FILE = "sent_news.json"
-
-RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://www.coindesk.com/arc/outboundfeeds/rss/"
-]
-
-# =========================
-# TELEGRAM
-# =========================
 
 def send_telegram(message):
 
@@ -39,200 +23,56 @@ def send_telegram(message):
         "text": message
     }
 
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except Exception as e:
-        logging.error(f"Erro Telegram: {e}")
+    requests.post(url, data=payload)
+
 
 # =========================
-# CONTROLE DE NOTÍCIAS
-# =========================
-
-def load_sent_news():
-
-    try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-
-    except:
-        return {"sent_ids": []}
-
-
-def save_sent_news(data):
-
-    with open(STATE_FILE, "w") as f:
-        json.dump(data, f)
-
-# =========================
-# BUSCAR RSS
-# =========================
-
-def get_recent_news():
-
-    state = load_sent_news()
-
-    now = datetime.utcnow()
-    day_ago = now - timedelta(hours=24)
-
-    for feed_url in RSS_FEEDS:
-
-        feed = feedparser.parse(feed_url)
-
-        for entry in feed.entries:
-
-            if not hasattr(entry, "published_parsed"):
-                continue
-
-            published = datetime(*entry.published_parsed[:6])
-
-            if published < day_ago:
-                continue
-
-            if entry.link in state["sent_ids"]:
-                continue
-
-            return {
-                "id": entry.link,
-                "title": entry.title,
-                "description": entry.summary if hasattr(entry, "summary") else "",
-                "source": feed.feed.title,
-                "date": published.strftime("%Y-%m-%d")
-            }
-
-    return None
-
-# =========================
-# IA EXPLICA NOTÍCIA
-# =========================
-
-def generate_detailed_news(title, description):
-
-    client = Groq(api_key=GROQ_API_KEY)
-
-    prompt = f"""
-Explique a notícia abaixo em 3 frases claras.
-
-Título: {title}
-
-Descrição: {description}
-"""
-
-    chat = client.chat.completions.create(
-
-        messages=[
-            {"role": "system", "content": "Você é analista financeiro."},
-            {"role": "user", "content": prompt}
-        ],
-
-        model="llama-3.1-8b-instant",
-        temperature=0.3,
-        max_tokens=200
-    )
-
-    return chat.choices[0].message.content
-
-# =========================
-# IA POST PARA X
-# =========================
-
-def generate_x_post(title, description):
-
-    client = Groq(api_key=GROQ_API_KEY)
-
-    prompt = f"""
-Crie um post para X com até 280 caracteres.
-
-Comece com 🚨
-Inclua hashtags.
-
-Título: {title}
-
-Descrição: {description}
-"""
-
-    chat = client.chat.completions.create(
-
-        messages=[
-            {"role": "system", "content": "Você é analista financeiro."},
-            {"role": "user", "content": prompt}
-        ],
-
-        model="llama-3.1-8b-instant",
-        temperature=0.4,
-        max_tokens=120
-    )
-
-    return chat.choices[0].message.content
-
-# =========================
-# RADAR CRYPTO
+# EXECUTAR RADAR
 # =========================
 
 def execute_crypto_radar():
 
     logging.info("📡 Executando radar cripto...")
 
-    trades = run_radar()
+    signals = run_radar()
 
-    if not trades:
-        logging.info("Nenhuma oportunidade encontrada.")
+    if not signals:
         return
 
-    for trade in trades:
+    for s in signals:
 
-        message = f"""
-🚨 ZAPID AI SPOT TRADE
+        if s["type"] == "BUY":
 
-Asset: {trade['asset']}
+            message = f"""
+🟢 ZAPID AI SIGNAL
 
-Entry: {trade['entry']}
-Target: {trade['target']}
-Stop: {trade['stop']}
+AÇÃO: COMPRAR
 
-Expected Profit: ~6%
+Moeda: {s['asset']}
 
-Confidence: {trade['confidence']}%
+Preço: {s['price']}
+
+Alvo: {s['target']} (+6%)
+
+Score técnico: {s['score']}
+"""
+
+        else:
+
+            message = f"""
+🔴 ZAPID AI SIGNAL
+
+AÇÃO: VENDER
+
+Moeda: {s['asset']}
+
+Preço atual: {s['price']}
+
+Lucro aproximado: +6%
 """
 
         send_telegram(message)
 
-# =========================
-# RADAR DE NOTÍCIAS
-# =========================
-
-def execute_news_radar():
-
-    logging.info("📰 Buscando notícias...")
-
-    news = get_recent_news()
-
-    if not news:
-        return
-
-    detailed = generate_detailed_news(news["title"], news["description"])
-
-    x_post = generate_x_post(news["title"], news["description"])
-
-    message = f"""
-📰 ZAPID GLOBAL RADAR
-
-{detailed}
-
-✂️ Post para X:
-
-{x_post}
-
-Fonte: {news['source']}
-Data: {news['date']}
-"""
-
-    send_telegram(message)
-
-    state = load_sent_news()
-
-    state["sent_ids"].append(news["id"])
-
-    save_sent_news(state)
 
 # =========================
 # LOOP AUTOMÁTICO
@@ -243,20 +83,13 @@ def radar_loop():
     while True:
 
         try:
-
             execute_crypto_radar()
-            execute_news_radar()
 
         except Exception as e:
+            logging.error(e)
 
-            logging.error(f"Erro radar: {e}")
-
-        # roda a cada 15 minutos
         time.sleep(900)
 
-# =========================
-# START LOOP
-# =========================
 
 def start_background_radar():
 
@@ -264,32 +97,19 @@ def start_background_radar():
     thread.daemon = True
     thread.start()
 
-# =========================
-# ROTAS
-# =========================
 
 @app.route("/")
 def home():
-
     return "ZapID Global Radar Online 🚀"
+
 
 @app.route("/crypto_radar")
 def manual_radar():
 
     execute_crypto_radar()
 
-    return "Radar executado manualmente."
+    return "Radar executado."
 
-@app.route("/radar")
-def manual_news():
-
-    execute_news_radar()
-
-    return "Radar de notícias executado."
-
-# =========================
-# RUN
-# =========================
 
 if __name__ == "__main__":
 
