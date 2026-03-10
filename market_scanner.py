@@ -2,336 +2,409 @@ import requests
 import pandas as pd
 import numpy as np
 import time
-
-CACHE = []
-LAST_SCAN = 0
+from config import TARGET_PROFIT, STOP_LOSS, FEE_RATE
 
 # =========================
-# TOP MOEDAS (CoinGecko)
+# CONFIG
 # =========================
 
-def get_top_coins(limit=20):
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "volume_desc",
-        "per_page": limit,
-        "page": 1
-    }
+MIN_SCORE_TO_SIGNAL = 10   # sinal só sai se score >= 10/15
+SCAN_LIMIT          = 20   # top 20 CoinGecko
+
+# mapeamento CoinGecko → Binance symbol
+COINGECKO_TO_BINANCE = {
+    "bitcoin":       "BTCUSDT",
+    "ethereum":      "ETHUSDT",
+    "tether":        None,          # stablecoin — ignora
+    "binancecoin":   "BNBUSDT",
+    "solana":        "SOLUSDT",
+    "ripple":        "XRPUSDT",
+    "usd-coin":      None,
+    "dogecoin":      "DOGEUSDT",
+    "cardano":       "ADAUSDT",
+    "tron":          "TRXUSDT",
+    "avalanche-2":   "AVAXUSDT",
+    "chainlink":     "LINKUSDT",
+    "polkadot":      "DOTUSDT",
+    "polygon":       "MATICUSDT",
+    "litecoin":      "LTCUSDT",
+    "shiba-inu":     "SHIBUSDT",
+    "uniswap":       "UNIUSDT",
+    "stellar":       "XLMUSDT",
+    "bitcoin-cash":  "BCHUSDT",
+    "near":          "NEARUSDT",
+    "internet-computer": "ICPUSDT",
+    "aptos":         "APTUSDT",
+    "arbitrum":      "ARBUSDT",
+    "optimism":      "OPUSDT",
+    "sui":           "SUIUSDT",
+}
+
+
+# =========================
+# DADOS — BINANCE KLINES
+# =========================
+
+def get_klines(symbol, interval="4h", limit=200):
+    """
+    Busca candles da Binance.
+    interval: 4h para análise principal, 1d para confirmação
+    limit: 200 candles = ~33 dias em 4h
+    """
+    url = "https://api.binance.com/api/v3/klines"
     try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        return data if isinstance(data, list) else []
-    except Exception as e:
-        print(f"❌ Erro CoinGecko markets: {e}")
-        return []
+        r = requests.get(url, params={
+            "symbol":   symbol,
+            "interval": interval,
+            "limit":    limit
+        }, timeout=10)
 
-
-# =========================
-# OHLC — 30 dias para EMA200
-# =========================
-
-def get_ohlc(coin_id):
-    try:
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-        params = {"vs_currency": "usd", "days": 30}
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-
-        if not isinstance(data, list) or len(data) < 50:
+        if not r.ok:
             return None
 
-        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close"])
-        df["volume"] = df["close"].diff().abs().fillna(0)
+        raw = r.json()
+        df = pd.DataFrame(raw, columns=[
+            "time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_vol", "trades", "taker_buy_base",
+            "taker_buy_quote", "ignore"
+        ])
+
+        df["close"]  = df["close"].astype(float)
+        df["high"]   = df["high"].astype(float)
+        df["low"]    = df["low"].astype(float)
+        df["open"]   = df["open"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+
         return df
 
     except Exception as e:
-        print(f"❌ Erro OHLC {coin_id}: {e}")
+        print(f"⚠️ Binance klines error {symbol}: {e}")
         return None
 
 
 # =========================
-# INDICADORES
+# INDICADORES TÉCNICOS
 # =========================
 
-def ema(series, period):
+def calc_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 
-def rsi(series, period=14):
+def calc_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss
+    gain  = delta.clip(lower=0)
+    loss  = -delta.clip(upper=0)
+    avg_g = gain.ewm(com=period - 1, adjust=False).mean()
+    avg_l = loss.ewm(com=period - 1, adjust=False).mean()
+    rs    = avg_g / avg_l
     return 100 - (100 / (1 + rs))
 
 
-def macd(series):
-    ema12 = ema(series, 12)
-    ema26 = ema(series, 26)
-    macd_line = ema12 - ema26
-    signal_line = ema(macd_line, 9)
-    histogram = macd_line - signal_line
+def calc_macd(series, fast=12, slow=26, signal=9):
+    ema_fast   = calc_ema(series, fast)
+    ema_slow   = calc_ema(series, slow)
+    macd_line  = ema_fast - ema_slow
+    signal_line = calc_ema(macd_line, signal)
+    histogram  = macd_line - signal_line
     return macd_line, signal_line, histogram
 
 
-def obv(df):
-    direction = df["close"].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+def calc_bollinger(series, period=20, std=2):
+    ma    = series.rolling(period).mean()
+    sigma = series.rolling(period).std()
+    upper = ma + std * sigma
+    lower = ma - std * sigma
+    return upper, ma, lower
+
+
+def calc_atr(df, period=14):
+    high_low   = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close  = (df["low"]  - df["close"].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.ewm(com=period - 1, adjust=False).mean()
+
+
+def calc_obv(df):
+    direction = df["close"].diff().apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0)
     return (direction * df["volume"]).cumsum()
 
 
-def bearish_divergence(price, indicator, window=5):
-    """Preço faz topo maior, indicador faz topo menor = exaustão de alta"""
-    if len(price) < window * 2:
-        return False
-    p = price.iloc[-window:]
-    i = indicator.iloc[-window:]
-    return float(p.iloc[-1]) > float(p.iloc[0]) and float(i.iloc[-1]) < float(i.iloc[0])
+def calc_stoch_rsi(rsi, period=14, smooth_k=3, smooth_d=3):
+    min_rsi = rsi.rolling(period).min()
+    max_rsi = rsi.rolling(period).max()
+    stoch   = (rsi - min_rsi) / (max_rsi - min_rsi + 1e-10) * 100
+    k = stoch.rolling(smooth_k).mean()
+    d = k.rolling(smooth_d).mean()
+    return k, d
 
 
-def bullish_divergence(price, indicator, window=5):
-    """Preço faz fundo menor, indicador faz fundo maior = reversão de baixa"""
-    if len(price) < window * 2:
-        return False
-    p = price.iloc[-window:]
-    i = indicator.iloc[-window:]
-    return float(p.iloc[-1]) < float(p.iloc[0]) and float(i.iloc[-1]) > float(i.iloc[0])
-
-
-# =========================
-# BUY SCORE (máx ~16 pts)
-# =========================
-
-def calculate_buy_score(df):
-    df = df.copy()
+def calc_adx(df, period=14):
+    """Average Directional Index — mede força da tendência"""
+    high  = df["high"]
+    low   = df["low"]
     close = df["close"]
 
-    df["EMA20"]  = ema(close, 20)
-    df["EMA50"]  = ema(close, 50)
-    df["EMA200"] = ema(close, 200)
-    df["RSI"]    = rsi(close)
-    df["OBV"]    = obv(df)
+    plus_dm  = high.diff()
+    minus_dm = -low.diff()
+    plus_dm[plus_dm  < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+    plus_dm[plus_dm < minus_dm]  = 0
+    minus_dm[minus_dm < plus_dm] = 0
 
-    macd_line, signal_line, histogram = macd(close)
+    tr        = calc_atr(df, period)
+    plus_di   = 100 * (plus_dm.ewm(com=period-1, adjust=False).mean() / tr)
+    minus_di  = 100 * (minus_dm.ewm(com=period-1, adjust=False).mean() / tr)
+    dx        = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)) * 100
+    adx       = dx.ewm(com=period-1, adjust=False).mean()
+    return adx, plus_di, minus_di
 
-    score = 0
-    details = []
 
-    price  = float(close.iloc[-1])
-    e20    = float(df["EMA20"].iloc[-1])
-    e50    = float(df["EMA50"].iloc[-1])
-    e200   = float(df["EMA200"].iloc[-1])
-    rsi_v  = float(df["RSI"].iloc[-1])
-    macd_v = float(macd_line.iloc[-1])
-    sig_v  = float(signal_line.iloc[-1])
+# =========================
+# ANÁLISE COMPLETA — 4H
+# =========================
 
-    # --- Tendência ---
-    if pd.notna(e200) and price > e200:
-        score += 2
-        details.append("✅ Preço > EMA200")
+def analyze_asset(symbol):
+    """
+    Análise técnica completa em 4h com confirmação diária.
+    Score máximo: 15 pontos
+    Sinal só sai se score >= 10
+    """
 
-    if pd.notna(e50) and pd.notna(e200) and e50 > e200:
-        score += 2
-        details.append("✅ Golden Cross (EMA50 > EMA200)")
+    # --- candles 4h (200 candles = ~33 dias) ---
+    df = get_klines(symbol, interval="4h", limit=200)
+    if df is None or len(df) < 60:
+        return None
 
-    if pd.notna(e20) and price > e20:
+    close  = df["close"]
+    price  = close.iloc[-1]
+
+    # --- indicadores ---
+    ema20  = calc_ema(close, 20)
+    ema50  = calc_ema(close, 50)
+    ema200 = calc_ema(close, 200)
+    rsi    = calc_rsi(close, 14)
+    macd_line, signal_line, histogram = calc_macd(close)
+    bb_upper, bb_mid, bb_lower = calc_bollinger(close, 20, 2)
+    atr    = calc_atr(df, 14)
+    obv    = calc_obv(df)
+    k, d   = calc_stoch_rsi(rsi)
+    adx, plus_di, minus_di = calc_adx(df, 14)
+
+    # valores atuais
+    rsi_now    = rsi.iloc[-1]
+    rsi_prev   = rsi.iloc[-2]
+    macd_now   = macd_line.iloc[-1]
+    macd_prev  = macd_line.iloc[-2]
+    sig_now    = signal_line.iloc[-1]
+    sig_prev   = signal_line.iloc[-2]
+    hist_now   = histogram.iloc[-1]
+    hist_prev  = histogram.iloc[-2]
+    obv_now    = obv.iloc[-1]
+    obv_ma     = obv.rolling(20).mean().iloc[-1]
+    k_now      = k.iloc[-1]
+    d_now      = d.iloc[-1]
+    adx_now    = adx.iloc[-1]
+    plus_now   = plus_di.iloc[-1]
+    minus_now  = minus_di.iloc[-1]
+    atr_now    = atr.iloc[-1]
+    bb_low_now = bb_lower.iloc[-1]
+    bb_mid_now = bb_mid.iloc[-1]
+
+    # --- confirmação diária ---
+    df_daily = get_klines(symbol, interval="1d", limit=60)
+    daily_trend = "neutral"
+    if df_daily is not None and len(df_daily) >= 50:
+        close_d = df_daily["close"]
+        ema50_d = calc_ema(close_d, 50)
+        ema200_d = calc_ema(close_d, 200)
+        if close_d.iloc[-1] > ema50_d.iloc[-1] > ema200_d.iloc[-1]:
+            daily_trend = "bullish"
+        elif close_d.iloc[-1] < ema50_d.iloc[-1]:
+            daily_trend = "bearish"
+
+    # ================================================
+    # SISTEMA DE SCORE — BUY (máx 15 pts)
+    # ================================================
+    score      = 0
+    indicators = []
+
+    # [3 pts] Tendência principal
+    if price > ema200.iloc[-1]:
         score += 1
-        details.append("✅ Preço > EMA20")
+        indicators.append("✅ Preço acima EMA200")
+    if ema50.iloc[-1] > ema200.iloc[-1]:
+        score += 1
+        indicators.append("✅ Golden Cross EMA50/200")
+    if daily_trend == "bullish":
+        score += 1
+        indicators.append("✅ Tendência diária bullish")
 
-    # --- RSI ---
-    if pd.notna(rsi_v):
-        if 40 < rsi_v < 60:
-            score += 1
-            details.append(f"✅ RSI neutro ({rsi_v:.1f})")
-        if rsi_v < 30:
-            score += 2
-            details.append(f"✅ RSI sobrevenda ({rsi_v:.1f})")
-        if bullish_divergence(close, df["RSI"]):
-            score += 2
-            details.append("✅ Divergência bullish RSI")
+    # [3 pts] Momentum RSI + StochRSI
+    if 40 <= rsi_now <= 60:
+        score += 1
+        indicators.append(f"✅ RSI neutro ({rsi_now:.0f})")
+    elif rsi_now < 35:
+        score += 2
+        indicators.append(f"✅ RSI sobrevenda ({rsi_now:.0f}) +2")
+    if k_now < 20 and k_now > d_now and k_now > k.iloc[-2]:
+        score += 1
+        indicators.append(f"✅ StochRSI saindo de sobrevenda ({k_now:.0f})")
 
-    # --- MACD ---
-    if pd.notna(macd_v):
-        if macd_v > sig_v:
-            score += 2
-            details.append("✅ MACD bullish crossover")
-        if macd_v > 0:
-            score += 1
-            details.append("✅ MACD acima de zero")
+    # [3 pts] MACD
+    if macd_now > sig_now and macd_prev <= sig_prev:
+        score += 2
+        indicators.append("✅ MACD crossover bullish +2")
+    elif macd_now > sig_now:
+        score += 1
+        indicators.append("✅ MACD acima do sinal")
+    if hist_now > 0 and hist_now > hist_prev:
+        score += 1
+        indicators.append("✅ Histograma crescendo")
 
-    # --- OBV ---
-    obv_series = df["OBV"]
-    if len(obv_series) > 5:
-        obv_trend = float(obv_series.iloc[-1]) > float(obv_series.iloc[-5])
-        if obv_trend:
-            score += 1
-            details.append("✅ OBV em alta")
+    # [2 pts] Bollinger Bands
+    if price <= bb_low_now * 1.01:
+        score += 2
+        indicators.append("✅ Preço na banda inferior BB +2")
+    elif price < bb_mid_now:
+        score += 1
+        indicators.append("✅ Preço abaixo da média BB")
 
-    return score, rsi_v, details
+    # [2 pts] ADX — força da tendência
+    if adx_now > 25 and plus_now > minus_now:
+        score += 2
+        indicators.append(f"✅ ADX forte bullish ({adx_now:.0f}) +2")
+    elif adx_now > 20:
+        score += 1
+        indicators.append(f"✅ ADX moderado ({adx_now:.0f})")
+
+    # [2 pts] OBV — volume confirma
+    if obv_now > obv_ma:
+        score += 1
+        indicators.append("✅ OBV acima da média (volume bullish)")
+    if obv_now > obv.iloc[-5]:
+        score += 1
+        indicators.append("✅ OBV em alta nos últimos 5 candles")
+
+    # ================================================
+    # CALCULAR ENTRADA, TARGET E STOP
+    # ================================================
+    entry  = round(price, 6)
+    target = round(entry * (1 + TARGET_PROFIT + FEE_RATE * 2), 6)
+    stop   = round(entry * (1 - STOP_LOSS), 6)
+    rr     = round(TARGET_PROFIT / STOP_LOSS, 2)  # risk/reward ratio
+
+    # ================================================
+    # RETORNAR RESULTADO
+    # ================================================
+    if score >= MIN_SCORE_TO_SIGNAL:
+        signal_type = "BUY"
+    else:
+        signal_type = "WAIT"
+
+    return {
+        "type":       signal_type,
+        "asset":      symbol,
+        "price":      entry,
+        "score":      score,
+        "max_score":  15,
+        "rsi":        round(rsi_now, 1),
+        "adx":        round(adx_now, 1),
+        "atr":        round(atr_now, 6),
+        "macd":       round(macd_now, 6),
+        "daily_trend": daily_trend,
+        "entry":      entry,
+        "target":     target,
+        "stop":       stop,
+        "rr_ratio":   rr,
+        "indicators": indicators,
+    }
 
 
 # =========================
-# SELL SCORE (máx ~14 pts)
+# SCAN TOP 20
 # =========================
 
-def calculate_sell_score(df, buy_price=None):
-    df = df.copy()
-    close = df["close"]
-
-    df["RSI"] = rsi(close)
-    df["OBV"] = obv(df)
-
-    macd_line, signal_line, histogram = macd(close)
-
-    score = 0
-    details = []
-    profit_pct = None
-    profit_ok = True
-
-    price  = float(close.iloc[-1])
-    rsi_v  = float(df["RSI"].iloc[-1])
-    macd_v = float(macd_line.iloc[-1])
-    sig_v  = float(signal_line.iloc[-1])
-
-    # --- Lucro mínimo 6% + taxas ---
-    if buy_price:
-        profit_pct = ((price - buy_price) / buy_price) * 100
-        if profit_pct >= 6.4:
-            score += 2
-            details.append(f"✅ Lucro {profit_pct:.1f}% (meta atingida)")
-        else:
-            profit_ok = False
-            details.append(f"⏳ Lucro {profit_pct:.1f}% (aguardando 6.4%)")
-
-    # --- RSI sobrecomprado ---
-    if pd.notna(rsi_v):
-        if rsi_v > 70:
-            score += 2
-            details.append(f"✅ RSI sobrecomprado ({rsi_v:.1f})")
-        if rsi_v > 80:
-            score += 1
-            details.append(f"✅ RSI extremo ({rsi_v:.1f})")
-        if bearish_divergence(close, df["RSI"]):
-            score += 2
-            details.append("✅ Divergência bearish RSI")
-
-    # --- MACD ---
-    if pd.notna(macd_v):
-        if macd_v < sig_v:
-            score += 2
-            details.append("✅ MACD bearish crossover")
-        if macd_v < 0:
-            score += 1
-            details.append("✅ MACD abaixo de zero")
-
-    # --- OBV divergindo ---
-    obv_series = df["OBV"]
-    if len(obv_series) > 5:
-        price_up = float(close.iloc[-1]) > float(close.iloc[-5])
-        obv_down = float(obv_series.iloc[-1]) < float(obv_series.iloc[-5])
-        if price_up and obv_down:
-            score += 2
-            details.append("✅ OBV divergindo (exaustão)")
-
-    return score, profit_ok, profit_pct, details
+def get_top20():
+    """Busca top 20 moedas do CoinGecko"""
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "usd",
+                "order":       "market_cap_desc",
+                "per_page":    30,
+                "page":        1,
+                "sparkline":   False
+            },
+            timeout=10
+        )
+        coins = r.json()
+        result = []
+        for c in coins:
+            cg_id = c["id"]
+            symbol = COINGECKO_TO_BINANCE.get(cg_id)
+            if symbol:
+                result.append(symbol)
+            if len(result) >= 20:
+                break
+        return result
+    except Exception as e:
+        print(f"⚠️ CoinGecko error: {e}")
+        return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
 
 
 # =========================
 # RADAR PRINCIPAL
 # =========================
 
-def run_radar(portfolio={}):
+def run_radar(portfolio=None):
     """
-    portfolio: dict {coin_id: entry_price}
-    ex: {"bitcoin": 95000, "ethereum": 3200}
-    Retorna lista de sinais ordenados por score
+    Escaneia top 20, retorna lista de sinais.
+    Só emite BUY se score >= 10/15.
     """
-    global CACHE, LAST_SCAN
-
-    # cache 5 minutos para não estourar rate limit CoinGecko
-    if time.time() - LAST_SCAN < 300 and CACHE:
-        print("📦 Usando cache do scanner")
-        return CACHE
-
-    LAST_SCAN = time.time()
     print("📡 ZAPID PRO — iniciando scan...")
 
-    coins = get_top_coins()
-    if not coins:
-        return []
+    symbols    = get_top20()
+    signals    = []
+    best_score = 0
+    best_asset = None
 
-    scored = []
-
-    for coin in coins:
-        coin_id = coin.get("id")
-        if not coin_id:
+    for symbol in symbols:
+        # pula se já temos posição aberta
+        if portfolio and symbol in portfolio:
             continue
 
-        # pequena pausa para não bater rate limit
-        time.sleep(1.2)
+        try:
+            result = analyze_asset(symbol)
+            if result is None:
+                continue
 
-        df = get_ohlc(coin_id)
-        if df is None or len(df) < 50:
-            continue
+            if result["type"] == "BUY":
+                signals.append(result)
+                print(f"🟢 SINAL BUY: {symbol} — score {result['score']}/15")
+            else:
+                if result["score"] > best_score:
+                    best_score = result["score"]
+                    best_asset = result
 
-        price     = float(df["close"].iloc[-1])
-        buy_price = portfolio.get(coin_id)
+            time.sleep(0.3)  # evitar rate limit Binance
 
-        buy_score,  rsi_val, buy_details  = calculate_buy_score(df)
-        sell_score, profit_ok, profit_pct, sell_details = calculate_sell_score(df, buy_price)
+        except Exception as e:
+            print(f"⚠️ Erro {symbol}: {e}")
 
-        scored.append({
-            "coin_id":     coin_id,
-            "symbol":      coin_id.upper(),
-            "price":       round(price, 6),
-            "buy_score":   buy_score,
-            "sell_score":  sell_score,
-            "rsi":         round(rsi_val, 1) if pd.notna(rsi_val) else None,
-            "profit_pct":  round(profit_pct, 2) if profit_pct else None,
-            "profit_ok":   profit_ok,
-            "buy_details": buy_details,
-            "sell_details":sell_details,
-        })
-
-    # ordenar pelo maior score
-    scored.sort(key=lambda x: max(x["buy_score"], x["sell_score"]), reverse=True)
-
-    signals = []
-
-    for s in scored[:10]:
-
-        # VENDA tem prioridade — proteger capital em aberto
-        if s["sell_score"] >= 7 and s["profit_ok"] and s["coin_id"] in portfolio:
-            signals.append({
-                "type":    "SELL",
-                "asset":   s["symbol"],
-                "price":   s["price"],
-                "score":   s["sell_score"],
-                "rsi":     s["rsi"],
-                "profit":  s["profit_pct"],
-                "details": s["sell_details"],
-            })
-
-        elif s["buy_score"] >= 7:
-            signals.append({
-                "type":    "BUY",
-                "asset":   s["symbol"],
-                "price":   s["price"],
-                "score":   s["buy_score"],
-                "rsi":     s["rsi"],
-                "details": s["buy_details"],
-            })
+    # ordena por score
+    signals.sort(key=lambda x: x["score"], reverse=True)
 
     if not signals:
-        signals.append({
+        print(f"⏸ Sem sinais fortes. Melhor candidato: {best_asset['asset'] if best_asset else 'N/A'} score {best_score}/15")
+        return [{
             "type":    "WAIT",
-            "message": "Mercado sem oportunidade clara no momento",
-            "top":     scored[0]["symbol"] if scored else "N/A",
-            "score":   scored[0]["buy_score"] if scored else 0,
-        })
+            "message": f"Nenhum ativo atingiu score mínimo ({MIN_SCORE_TO_SIGNAL}/15)",
+            "top":     best_asset["asset"] if best_asset else "N/A",
+            "score":   best_score
+        }]
 
-    CACHE = signals
-    print(f"✅ Scan concluído — {len(signals)} sinal(is) gerado(s)")
+    print(f"✅ Scan concluído — {len(signals)} sinal(is) BUY encontrado(s)")
     return signals
+
