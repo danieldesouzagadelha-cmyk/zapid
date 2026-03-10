@@ -21,28 +21,17 @@ def startup():
     try:
         from telegram_bot import start_bot, send_telegram
         start_bot()
-        send_telegram("🚀 <b>ZapID Pro está online!</b>\nUse /radar para escanear o mercado.")
+        send_telegram("🚀 <b>ZapID Pro está online!</b>\nRadar automático ativado — análise a cada hora.")
     except Exception as e:
         print(f"⚠️ Telegram start error: {e}")
 
 
 # =========================
-# ROTAS
+# LÓGICA CENTRAL DO SCAN
 # =========================
 
-@app.route("/")
-def home():
-    return jsonify({
-        "status": "online",
-        "engine": "ZapID Pro",
-        "version": "2.0",
-        "endpoints": ["/radar", "/signals", "/performance", "/trades", "/monitor"]
-    })
-
-
-@app.route("/radar")
-def radar():
-    print("🛰️ /radar chamado")
+def run_scan():
+    """Executa o scan completo — usado pelo auto_radar e pela rota /radar"""
     try:
         from market_scanner import run_radar
         from ai_predictor import enrich_signals
@@ -51,9 +40,10 @@ def radar():
         from trade_monitor import update_open_trades
 
         update_open_trades()
+
         portfolio = get_portfolio()
-        signals = run_radar(portfolio)
-        enriched = enrich_signals(signals)
+        signals   = run_radar(portfolio)
+        enriched  = enrich_signals(signals)
 
         notified = []
         for s in enriched:
@@ -73,15 +63,34 @@ def radar():
             if signals and signals[0].get("type") == "WAIT":
                 send_telegram(format_signal(signals[0]))
 
-        return jsonify({
-            "status": "ok",
-            "signals": len(notified),
-            "data": enriched
-        })
+        print(f"✅ Scan concluído — {len(notified)} sinal(is)")
+        return {"status": "ok", "signals": len(notified), "data": enriched}
 
     except Exception as e:
-        print(f"❌ Erro /radar: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print(f"❌ Erro no scan: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# =========================
+# ROTAS
+# =========================
+
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "online",
+        "engine": "ZapID Pro",
+        "version": "2.0",
+        "endpoints": ["/radar", "/signals", "/performance", "/trades", "/monitor"]
+    })
+
+
+@app.route("/radar")
+def radar():
+    """Rota manual — também chamada pelo GitHub Action"""
+    print("🛰️ /radar chamado manualmente")
+    result = run_scan()
+    return jsonify(result)
 
 
 @app.route("/signals")
@@ -126,7 +135,6 @@ def register_buy():
     try:
         from database import log_trade
         from telegram_bot import send_telegram
-        from config import TARGET_PROFIT, STOP_LOSS, FEE_RATE
 
         data   = request.get_json()
         symbol = data.get("symbol", "").upper()
@@ -162,10 +170,24 @@ def register_buy():
 
 
 # =========================
+# AUTO RADAR — 1x por hora
+# =========================
+
+def auto_radar():
+    """Roda o radar automaticamente a cada hora sem ninguém pedir"""
+    time.sleep(30)  # aguarda inicialização completa
+    while True:
+        print("⏰ Auto-radar disparado!")
+        run_scan()
+        time.sleep(3600)  # 1 hora
+
+
+# =========================
 # KEEP-ALIVE (Render free)
 # =========================
 
 def keep_alive():
+    """Ping interno a cada 10min para o Render não dormir"""
     time.sleep(60)
     while True:
         try:
@@ -189,6 +211,7 @@ def before_first():
     if not _started:
         _started = True
         startup()
+        threading.Thread(target=auto_radar, daemon=True).start()
         threading.Thread(target=keep_alive, daemon=True).start()
 
 _started = False
