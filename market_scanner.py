@@ -1,17 +1,11 @@
 import requests
-import time
 
+from config import SYMBOLS, TARGET_PROFIT, STOP_LOSS, FEE_RATE
 from ai_predictor import predict_move
 from telegram_bot import send_telegram
-from config import SYMBOLS, TARGET_PROFIT, STOP_LOSS, FEE_RATE
-
-from trades import log_trade
-from trade_monitor import update_trades
-from performance import calculate_performance
 
 TARGET_WITH_FEES = TARGET_PROFIT + FEE_RATE
 
-entries = {}
 
 # ==========================
 # DATA
@@ -27,14 +21,26 @@ def get_klines(symbol, interval="5m", limit=120):
         "limit": limit
     }
 
-    r = requests.get(url, params=params)
+    try:
 
-    data = r.json()
+        r = requests.get(url, params=params, timeout=10)
 
-    closes = [float(c[4]) for c in data]
-    volumes = [float(c[5]) for c in data]
+        data = r.json()
 
-    return closes, volumes
+        if not isinstance(data, list):
+            print("Erro Binance:", data)
+            return [], []
+
+        closes = [float(c[4]) for c in data]
+        volumes = [float(c[5]) for c in data]
+
+        return closes, volumes
+
+    except Exception as e:
+
+        print("Erro API Binance:", e)
+
+        return [], []
 
 
 def get_recent_trades(symbol):
@@ -43,20 +49,29 @@ def get_recent_trades(symbol):
 
     params = {"symbol": symbol, "limit": 100}
 
-    r = requests.get(url, params=params)
+    try:
 
-    data = r.json()
+        r = requests.get(url, params=params, timeout=10)
 
-    values = []
+        data = r.json()
 
-    for t in data:
+        if not isinstance(data, list):
+            return []
 
-        price = float(t["price"])
-        qty = float(t["qty"])
+        values = []
 
-        values.append(price * qty)
+        for t in data:
 
-    return values
+            price = float(t["price"])
+            qty = float(t["qty"])
+
+            values.append(price * qty)
+
+        return values
+
+    except:
+
+        return []
 
 
 # ==========================
@@ -65,10 +80,16 @@ def get_recent_trades(symbol):
 
 def moving_average(data, period):
 
+    if len(data) < period:
+        return 0
+
     return sum(data[-period:]) / period
 
 
 def calculate_rsi(prices, period=14):
+
+    if len(prices) < period + 1:
+        return 50
 
     gains = []
     losses = []
@@ -78,12 +99,9 @@ def calculate_rsi(prices, period=14):
         diff = prices[i] - prices[i-1]
 
         if diff > 0:
-
             gains.append(diff)
             losses.append(0)
-
         else:
-
             losses.append(abs(diff))
             gains.append(0)
 
@@ -121,6 +139,9 @@ def analyze_trend(symbol):
     prices1h, _ = get_klines(symbol, "1h")
     prices4h, _ = get_klines(symbol, "4h")
 
+    if not prices5 or not prices1h or not prices4h:
+        return 0, [], []
+
     ma20 = moving_average(prices5, 20)
     ma50 = moving_average(prices5, 50)
 
@@ -152,18 +173,21 @@ def analyze_market(symbol):
 
     trend, prices, volumes = analyze_trend(symbol)
 
+    if not prices or len(prices) < 50:
+        return None
+
     price = prices[-1]
 
     ma20 = moving_average(prices, 20)
 
     rsi = calculate_rsi(prices)
 
-    pullback = (price - ma20) / ma20
+    pullback = (price - ma20) / ma20 if ma20 > 0 else 0
 
-    avg_volume = sum(volumes[-20:]) / 20
+    avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else 0
     volume_now = volumes[-1]
 
-    volume_strength = volume_now / avg_volume
+    volume_strength = volume_now / avg_volume if avg_volume > 0 else 0
 
     whales = detect_whales(symbol)
 
@@ -221,19 +245,14 @@ def send_signal(data):
     confidence = data["confidence"]
     prediction = data["prediction"]
 
-    if "UP" in prediction:
-        signal = "BUY"
-        icon = "🟢"
-    else:
-        signal = "SELL"
-        icon = "🔴"
+    signal = "BUY" if "UP" in prediction else "SELL"
 
     msg = f"""
 🚨 AI RADAR SIGNAL
 
 🪙 {symbol}
 
-{icon} SIGNAL: {signal}
+SIGNAL: {signal}
 
 Entry: {entry}
 Target: {target}
@@ -244,64 +263,24 @@ Confidence: {confidence}%
 
     send_telegram(msg)
 
-    log_trade(symbol, entry, target, stop)
-
 
 # ==========================
-# PERFORMANCE MESSAGE
+# RADAR RUN
 # ==========================
 
-def send_performance():
+def run_radar():
 
-    wins, losses, total, winrate = calculate_performance()
-
-    msg = f"""
-📊 RADAR PERFORMANCE
-
-Trades: {total}
-Wins: {wins}
-Losses: {losses}
-
-Win Rate: {winrate}%
-"""
-
-    send_telegram(msg)
-
-
-# ==========================
-# MAIN LOOP
-# ==========================
-
-while True:
-
-    print("\n📡 AI MARKET SCANNER RUNNING\n")
-
-    market = []
+    print("📡 AI MARKET SCANNER RUNNING")
 
     for symbol in SYMBOLS:
 
         data = analyze_market(symbol)
 
-        market.append(data)
+        if data is None:
+            continue
 
         print(symbol, "confidence:", data["confidence"])
 
-        if data["confidence"] >= 75 and symbol not in entries:
-
-            entries[symbol] = data["price"]
+        if data["confidence"] >= 75:
 
             send_signal(data)
-
-    print("\n🏆 MARKET RANKING\n")
-
-    ranked = sorted(market, key=lambda x: x["confidence"], reverse=True)
-
-    for r in ranked[:5]:
-
-        print(r["symbol"], "confidence:", r["confidence"])
-
-    update_trades()
-
-    send_performance()
-
-    time.sleep(300)
