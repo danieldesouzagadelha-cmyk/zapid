@@ -1,7 +1,6 @@
 flask
 gunicorn
 requests
-feedparser
-groq
 pandas
 numpy
+psycopg2-binary
