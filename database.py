@@ -1,7 +1,7 @@
 import os
+import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timezone
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -9,36 +9,36 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 # =========================
-# SETUP
+# SETUP + MIGRAÇÃO
 # =========================
 
 def setup_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
 
-            # tabela de sinais (histórico completo)
+            # tabela de sinais
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS signals (
-                    id          SERIAL PRIMARY KEY,
-                    created_at  TIMESTAMPTZ DEFAULT NOW(),
-                    symbol      TEXT NOT NULL,
-                    signal_type TEXT NOT NULL,       -- BUY / SELL / WAIT
-                    price       NUMERIC,
-                    score       INTEGER,
-                    rsi         NUMERIC,
-                    adx         NUMERIC,
-                    entry       NUMERIC,
-                    target      NUMERIC,
-                    stop        NUMERIC,
-                    daily_trend TEXT,
-                    indicators  TEXT,               -- JSON array
+                    id            SERIAL PRIMARY KEY,
+                    created_at    TIMESTAMPTZ DEFAULT NOW(),
+                    symbol        TEXT NOT NULL,
+                    signal_type   TEXT NOT NULL,
+                    price         NUMERIC,
+                    score         INTEGER,
+                    rsi           NUMERIC,
+                    adx           NUMERIC,
+                    entry         NUMERIC,
+                    target        NUMERIC,
+                    stop          NUMERIC,
+                    daily_trend   TEXT,
+                    indicators    TEXT,
                     ai_prediction TEXT,
-                    outcome     TEXT DEFAULT 'OPEN', -- OPEN / WIN / LOSS / MANUAL
-                    profit_pct  NUMERIC             -- preenchido quando fecha
+                    outcome       TEXT DEFAULT 'OPEN',
+                    profit_pct    NUMERIC
                 )
             """)
 
-            # tabela de trades abertos
+            # tabela de trades
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS trades (
                     id           SERIAL PRIMARY KEY,
@@ -47,10 +47,29 @@ def setup_db():
                     entry_price  NUMERIC NOT NULL,
                     target_price NUMERIC NOT NULL,
                     stop_price   NUMERIC NOT NULL,
-                    signal_id    INTEGER REFERENCES signals(id),
-                    status       TEXT DEFAULT 'OPEN'  -- OPEN / WIN / LOSS
+                    signal_id    INTEGER,
+                    status       TEXT DEFAULT 'OPEN'
                 )
             """)
+
+            # MIGRAÇÃO: adiciona colunas que podem estar faltando
+            migrations = [
+                "ALTER TABLE trades ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'OPEN'",
+                "ALTER TABLE trades ADD COLUMN IF NOT EXISTS signal_id INTEGER",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome TEXT DEFAULT 'OPEN'",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS profit_pct NUMERIC",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS adx NUMERIC",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS daily_trend TEXT",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS indicators TEXT",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry NUMERIC",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS target NUMERIC",
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS stop NUMERIC",
+            ]
+            for sql in migrations:
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    pass
 
         conn.commit()
     print("✅ Banco de dados pronto")
@@ -61,8 +80,6 @@ def setup_db():
 # =========================
 
 def log_signal(signal):
-    """Salva sinal no histórico"""
-    import json
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -108,9 +125,7 @@ def update_signal_outcome(signal_id, outcome, profit_pct):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                UPDATE signals
-                SET outcome = %s, profit_pct = %s
-                WHERE id = %s
+                UPDATE signals SET outcome = %s, profit_pct = %s WHERE id = %s
             """, (outcome, profit_pct, signal_id))
         conn.commit()
 
@@ -151,8 +166,6 @@ def close_trade(trade_id, status, profit_pct=None):
             """, (status, trade_id))
             row = cur.fetchone()
         conn.commit()
-
-    # atualiza o sinal vinculado
     if row and row["signal_id"] and profit_pct is not None:
         update_signal_outcome(row["signal_id"], status, profit_pct)
 
@@ -169,22 +182,19 @@ def get_portfolio():
 def get_performance():
     with get_conn() as conn:
         with conn.cursor() as cur:
-
-            # sinais dos últimos 30 dias
             cur.execute("""
                 SELECT
                     COUNT(*) FILTER (WHERE outcome = 'WIN')  AS wins,
                     COUNT(*) FILTER (WHERE outcome = 'LOSS') AS losses,
                     COUNT(*) FILTER (WHERE outcome = 'OPEN') AS open_signals,
-                    AVG(profit_pct) FILTER (WHERE outcome IN ('WIN','LOSS')) AS avg_profit,
-                    SUM(profit_pct) FILTER (WHERE outcome IN ('WIN','LOSS')) AS total_profit
+                    AVG(profit_pct)  FILTER (WHERE outcome IN ('WIN','LOSS')) AS avg_profit,
+                    SUM(profit_pct)  FILTER (WHERE outcome IN ('WIN','LOSS')) AS total_profit
                 FROM signals
                 WHERE signal_type = 'BUY'
                   AND created_at >= NOW() - INTERVAL '30 days'
             """)
             row = dict(cur.fetchone())
 
-            # trades abertos
             cur.execute("SELECT COUNT(*) AS cnt FROM trades WHERE status = 'OPEN'")
             row["open_trades"] = cur.fetchone()["cnt"]
 
@@ -192,5 +202,4 @@ def get_performance():
         losses = row.get("losses") or 0
         total  = wins + losses
         row["winrate"] = (wins / total * 100) if total > 0 else 0.0
-
         return row
