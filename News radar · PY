@@ -1,0 +1,295 @@
+import os
+import requests
+import feedparser
+import time
+import json
+from datetime import datetime, timezone
+
+# =========================
+# FONTES DE NOTÍCIAS RSS
+# =========================
+
+RSS_FEEDS = [
+    "https://cointelegraph.com/rss",
+    "https://coindesk.com/arc/outboundfeeds/rss/",
+    "https://decrypt.co/feed",
+    "https://bitcoinmagazine.com/.rss/full/",
+    "https://cryptonews.com/news/feed/",
+]
+
+# palavras-chave que indicam notícia relevante
+KEYWORDS_BULLISH = [
+    "bull", "surge", "rally", "breakout", "adoption", "etf", "approval",
+    "partnership", "record", "high", "pump", "buy", "accumulate", "upgrade",
+    "launch", "listing", "institutional", "halving"
+]
+
+KEYWORDS_BEARISH = [
+    "bear", "crash", "dump", "hack", "ban", "regulation", "sec", "lawsuit",
+    "sell", "drop", "fear", "panic", "scam", "fraud", "investigation", "fine"
+]
+
+KEYWORDS_CRYPTO = [
+    "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain", "defi",
+    "nft", "solana", "sol", "binance", "bnb", "ripple", "xrp", "altcoin"
+]
+
+# cache de notícias já postadas (evita duplicatas)
+posted_cache = set()
+
+
+# =========================
+# BUSCAR NOTÍCIAS
+# =========================
+
+def fetch_news():
+    """Busca notícias de todas as fontes RSS"""
+    news = []
+
+    for feed_url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:5]:  # top 5 de cada fonte
+                title   = entry.get("title", "")
+                link    = entry.get("link", "")
+                summary = entry.get("summary", "")[:200]
+
+                if not title or not link:
+                    continue
+
+                # evitar duplicatas
+                if link in posted_cache:
+                    continue
+
+                news.append({
+                    "title":   title,
+                    "link":    link,
+                    "summary": summary,
+                    "source":  feed.feed.get("title", "Crypto News")
+                })
+
+        except Exception as e:
+            print(f"⚠️ Erro feed {feed_url}: {e}")
+
+    return news
+
+
+# =========================
+# ANALISAR SENTIMENTO
+# =========================
+
+def analyze_sentiment(title, summary):
+    """Analisa sentimento da notícia — bullish, bearish ou neutral"""
+    text = (title + " " + summary).lower()
+
+    # verifica se é sobre cripto
+    is_crypto = any(kw in text for kw in KEYWORDS_CRYPTO)
+    if not is_crypto:
+        return None
+
+    bullish_score = sum(1 for kw in KEYWORDS_BULLISH if kw in text)
+    bearish_score = sum(1 for kw in KEYWORDS_BEARISH if kw in text)
+
+    if bullish_score > bearish_score:
+        return "bullish"
+    elif bearish_score > bullish_score:
+        return "bearish"
+    return "neutral"
+
+
+# =========================
+# GROK — RESUMIR E CRIAR POST
+# =========================
+
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+GROK_API_URL = "https://api.x.ai/v1/chat/completions"
+
+def create_x_post(news_item, sentiment):
+    """Usa o Grok para criar um post otimizado para o X"""
+
+    if not GROK_API_KEY:
+        # fallback sem Grok
+        emoji = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
+        return f"{emoji} {news_item['title'][:200]}\n\n{news_item['link']}\n\n#Crypto #Bitcoin"
+
+    prompt = f"""Crie um post para o X (Twitter) sobre esta notícia de criptomoeda.
+
+TÍTULO: {news_item['title']}
+RESUMO: {news_item['summary']}
+SENTIMENTO: {sentiment}
+FONTE: {news_item['source']}
+
+Regras:
+- Máximo 280 caracteres no total
+- Use emojis relevantes
+- Seja direto e impactante
+- Inclua hashtags: #Crypto #Bitcoin
+- NÃO inclua o link (será adicionado depois)
+- Escreva em português
+
+Responda APENAS com o texto do post, sem explicações."""
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROK_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        body = {
+            "model": "grok-3-mini",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 150,
+            "temperature": 0.7
+        }
+
+        r = requests.post(GROK_API_URL, headers=headers, json=body, timeout=15)
+        r.raise_for_status()
+
+        post_text = r.json()["choices"][0]["message"]["content"].strip()
+
+        # adicionar link
+        full_post = f"{post_text}\n\n{news_item['link']}"
+
+        # garantir limite de 280 chars
+        if len(full_post) > 280:
+            max_text = 280 - len(news_item['link']) - 4
+            post_text = post_text[:max_text] + "..."
+            full_post = f"{post_text}\n\n{news_item['link']}"
+
+        return full_post
+
+    except Exception as e:
+        print(f"❌ Erro Grok news: {e}")
+        emoji = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
+        return f"{emoji} {news_item['title'][:180]}\n\n{news_item['link']}\n\n#Crypto #Bitcoin"
+
+
+# =========================
+# POSTAR NO X (Twitter)
+# =========================
+
+X_API_KEY             = os.getenv("X_API_KEY")
+X_API_SECRET          = os.getenv("X_API_SECRET")
+X_ACCESS_TOKEN        = os.getenv("X_ACCESS_TOKEN")
+X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET")
+
+def post_to_x(text):
+    """Posta no X usando a API v2"""
+    if not all([X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET]):
+        print("⚠️ Credenciais do X não configuradas — enviando só para Telegram")
+        return False
+
+    try:
+        import hmac
+        import hashlib
+        import base64
+        import urllib.parse
+        from requests_oauthlib import OAuth1
+
+        url = "https://api.twitter.com/2/tweets"
+
+        auth = OAuth1(
+            X_API_KEY,
+            X_API_SECRET,
+            X_ACCESS_TOKEN,
+            X_ACCESS_TOKEN_SECRET
+        )
+
+        r = requests.post(url, json={"text": text}, auth=auth, timeout=10)
+
+        if r.ok:
+            print(f"✅ Postado no X: {text[:50]}...")
+            return True
+        else:
+            print(f"❌ Erro X API: {r.status_code} — {r.text}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Erro ao postar no X: {e}")
+        return False
+
+
+# =========================
+# NOTIFICAR NO TELEGRAM
+# =========================
+
+def notify_telegram_news(post_text, sentiment, source):
+    """Envia a notícia também para o Telegram"""
+    from telegram_bot import send_telegram
+
+    emoji = "🟢" if sentiment == "bullish" else "🔴" if sentiment == "bearish" else "📰"
+    label = "BULLISH" if sentiment == "bullish" else "BEARISH" if sentiment == "bearish" else "NEUTRO"
+
+    msg = (
+        f"{emoji} <b>NOTÍCIA {label}</b>\n"
+        f"📰 {source}\n\n"
+        f"{post_text}"
+    )
+
+    send_telegram(msg)
+
+
+# =========================
+# RADAR DE NOTÍCIAS
+# =========================
+
+def run_news_radar():
+    """
+    Busca notícias, analisa sentimento, cria post com Grok
+    e posta no X + Telegram
+    """
+    print("📰 News radar iniciando...")
+
+    news_list = fetch_news()
+
+    if not news_list:
+        print("📭 Sem notícias novas")
+        return 0
+
+    posted = 0
+
+    for news in news_list:
+        sentiment = analyze_sentiment(news["title"], news["summary"])
+
+        # só posta bullish e bearish, ignora neutral
+        if sentiment not in ["bullish", "bearish"]:
+            continue
+
+        post_text = create_x_post(news, sentiment)
+
+        # postar no X
+        posted_x = post_to_x(post_text)
+
+        # sempre notifica no Telegram
+        notify_telegram_news(post_text, sentiment, news["source"])
+
+        # marcar como postado
+        posted_cache.add(news["link"])
+
+        posted += 1
+
+        # pausa entre posts para não spammar
+        time.sleep(30)
+
+        # máximo 3 posts por ciclo
+        if posted >= 3:
+            break
+
+    print(f"✅ News radar — {posted} notícia(s) postada(s)")
+    return posted
+
+
+# =========================
+# LOOP AUTOMÁTICO
+# =========================
+
+def auto_news(interval_minutes=60):
+    """Roda o radar de notícias automaticamente"""
+    time.sleep(60)  # aguarda inicialização
+    while True:
+        try:
+            run_news_radar()
+        except Exception as e:
+            print(f"❌ Erro auto_news: {e}")
+        time.sleep(interval_minutes * 60)
