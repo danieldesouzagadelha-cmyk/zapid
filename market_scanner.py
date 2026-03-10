@@ -326,45 +326,13 @@ def analyze_asset(symbol):
 # =========================
 
 def get_top20():
-    """Busca top 20 moedas do CoinGecko"""
-    fallback = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-                "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "DOTUSDT"]
-    try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/coins/markets",
-            params={
-                "vs_currency": "usd",
-                "order":       "market_cap_desc",
-                "per_page":    30,
-                "page":        1,
-                "sparkline":   False
-            },
-            timeout=10
-        )
-
-        data = r.json()
-
-        # CoinGecko retornou erro (ex: rate limit) — usa fallback
-        if not isinstance(data, list):
-            print(f"⚠️ CoinGecko resposta inesperada: {data}")
-            return fallback
-
-        result = []
-        for c in data:
-            if not isinstance(c, dict):
-                continue
-            cg_id  = c.get("id", "")
-            symbol = COINGECKO_TO_BINANCE.get(cg_id)
-            if symbol:
-                result.append(symbol)
-            if len(result) >= 20:
-                break
-
-        return result if result else fallback
-
-    except Exception as e:
-        print(f"⚠️ CoinGecko error: {e}")
-        return fallback
+    """Retorna lista estática dos top 20 pares — sem depender do CoinGecko"""
+    return [
+        "BTCUSDT",  "ETHUSDT",  "BNBUSDT",  "SOLUSDT",  "XRPUSDT",
+        "DOGEUSDT", "ADAUSDT",  "TRXUSDT",  "AVAXUSDT", "LINKUSDT",
+        "DOTUSDT",  "MATICUSDT","LTCUSDT",  "UNIUSDT",  "XLMUSDT",
+        "BCHUSDT",  "NEARUSDT", "APTUSDT",  "ARBUSDT",  "SUIUSDT",
+    ]
 
 
 # =========================
@@ -420,4 +388,3 @@ def run_radar(portfolio=None):
 
     print(f"✅ Scan concluído — {len(signals)} sinal(is) BUY encontrado(s)")
     return signals
-
