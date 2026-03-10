@@ -1,10 +1,15 @@
+
 import requests
 import pandas as pd
+import numpy as np
+import time
+
+CACHE = []
+LAST_SCAN = 0
 
 # =========================
 # PEGAR TOP MOEDAS
 # =========================
-
 def get_top_coins():
 
     url = "https://api.coingecko.com/api/v3/coins/markets"
@@ -16,15 +21,20 @@ def get_top_coins():
         "page": 1
     }
 
-    r = requests.get(url, params=params)
+    try:
 
-    data = r.json()
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
 
-    if not isinstance(data, list):
+        if not isinstance(data, list):
+            return []
+
+        return data[:20]
+
+    except Exception as e:
+
+        print("Erro CoinGecko:", e)
         return []
-
-    return data
-
 
 # =========================
 # INDICADORES
@@ -33,7 +43,6 @@ def get_top_coins():
 def ema(data, period):
     return data.ewm(span=period, adjust=False).mean()
 
-
 def rsi(data, period=14):
 
     delta = data.diff()
@@ -41,13 +50,12 @@ def rsi(data, period=14):
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
 
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
 
     rs = avg_gain / avg_loss
 
     return 100 - (100 / (1 + rs))
-
 
 def macd(data):
 
@@ -59,6 +67,16 @@ def macd(data):
 
     return macd_line, signal
 
+def bearish_divergence(price, indicator):
+
+    if len(price) < 10:
+        return False
+
+    price_recent = price.iloc[-5:]
+    ind_recent = indicator.iloc[-5:]
+
+    return price_recent.iloc[-1] > price_recent.iloc[0] and \
+           ind_recent.iloc[-1] < ind_recent.iloc[0]
 
 # =========================
 # OHLC
@@ -72,14 +90,14 @@ def get_ohlc(coin):
 
         params = {
             "vs_currency": "usd",
-            "days": 1
+            "days": 30
         }
 
-        r = requests.get(url, params=params)
+        r = requests.get(url, params=params, timeout=10)
 
         data = r.json()
 
-        if not isinstance(data, list):
+        if not isinstance(data, list) or len(data) < 50:
             return None
 
         df = pd.DataFrame(data, columns=[
@@ -90,12 +108,14 @@ def get_ohlc(coin):
             "close"
         ])
 
+        # proxy volume
+        df["volume"] = df["close"].diff().abs()
+
         return df
 
     except:
 
         return None
-
 
 # =========================
 # BUY SCORE
@@ -117,37 +137,39 @@ def calculate_buy_score(df):
 
     price = close.iloc[-1]
 
-    # tendência
-    if price > df["EMA200"].iloc[-1]:
-        score += 2
+    e20 = df["EMA20"].iloc[-1]
+    e50 = df["EMA50"].iloc[-1]
+    e200 = df["EMA200"].iloc[-1]
 
-    if df["EMA50"].iloc[-1] > df["EMA200"].iloc[-1]:
-        score += 2
-
-    # rsi
     rsi_val = df["RSI"].iloc[-1]
 
-    if 40 < rsi_val < 60:
-        score += 1
-
-    if rsi_val < 30:
+    if pd.notna(e200) and price > e200:
         score += 2
 
-    # macd
-    if macd_line.iloc[-1] > signal.iloc[-1]:
+    if pd.notna(e50) and pd.notna(e200) and e50 > e200:
         score += 2
 
-    if macd_line.iloc[-1] > 0:
+    if pd.notna(rsi_val):
+
+        if 40 < rsi_val < 60:
+            score += 1
+
+        if rsi_val < 30:
+            score += 2
+
+    if pd.notna(macd_line.iloc[-1]) and macd_line.iloc[-1] > signal.iloc[-1]:
+        score += 2
+
+    if pd.notna(macd_line.iloc[-1]) and macd_line.iloc[-1] > 0:
         score += 1
 
-    return score
-
+    return score, rsi_val
 
 # =========================
 # SELL SCORE
 # =========================
 
-def calculate_sell_score(df):
+def calculate_sell_score(df, buy_price=None):
 
     close = df["close"]
 
@@ -157,10 +179,28 @@ def calculate_sell_score(df):
 
     score = 0
 
+    price = close.iloc[-1]
+
     rsi_val = df["RSI"].iloc[-1]
 
-    if rsi_val > 70:
-        score += 2
+    profit_ok = True
+
+    if buy_price:
+
+        profit_pct = ((price - buy_price) / buy_price) * 100
+
+        if profit_pct >= 6.4:
+            score += 2
+        else:
+            profit_ok = False
+
+    if pd.notna(rsi_val):
+
+        if rsi_val > 70:
+            score += 2
+
+        if rsi_val > 80:
+            score += 1
 
     if macd_line.iloc[-1] < signal.iloc[-1]:
         score += 2
@@ -168,23 +208,33 @@ def calculate_sell_score(df):
     if macd_line.iloc[-1] < 0:
         score += 1
 
-    return score
+    if bearish_divergence(close, df["RSI"]):
+        score += 2
 
+    return score, profit_ok
 
 # =========================
 # RADAR PRINCIPAL
 # =========================
 
-def run_radar():
+def run_radar(portfolio={}):
+
+    global CACHE, LAST_SCAN
+
+    # cache 5 minutos
+    if time.time() - LAST_SCAN < 300:
+        return CACHE
+
+    LAST_SCAN = time.time()
 
     print("📡 ZAPID PRO MARKET SCANNER")
 
     coins = get_top_coins()
 
-    signals = []
-
     if not coins:
         return []
+
+    scored = []
 
     for coin in coins:
 
@@ -195,49 +245,58 @@ def run_radar():
 
         df = get_ohlc(coin_id)
 
-        if df is None or len(df) < 50:
+        if df is None:
             continue
 
         price = df["close"].iloc[-1]
 
-        buy_score = calculate_buy_score(df)
-        sell_score = calculate_sell_score(df)
+        buy_price = portfolio.get(coin_id)
 
-        # =====================
-        # COMPRA
-        # =====================
+        buy_score, rsi_val = calculate_buy_score(df)
+        sell_score, profit_ok = calculate_sell_score(df, buy_price)
 
-        if buy_score >= 10:
+        scored.append({
+            "coin": coin_id,
+            "price": price,
+            "buy_score": buy_score,
+            "sell_score": sell_score,
+            "rsi": rsi_val,
+            "profit_ok": profit_ok
+        })
+
+    # ranking
+    scored.sort(key=lambda x: max(x["buy_score"], x["sell_score"]), reverse=True)
+
+    signals = []
+
+    for s in scored[:5]:
+
+        if s["buy_score"] >= 9:
 
             signals.append({
                 "type": "BUY",
-                "asset": coin_id.upper(),
-                "price": round(price, 4)
+                "asset": s["coin"].upper(),
+                "price": round(s["price"], 4),
+                "score": s["buy_score"]
             })
 
-        # =====================
-        # VENDA
-        # =====================
-
-        elif sell_score >= 7:
+        elif s["sell_score"] >= 7 and s["profit_ok"]:
 
             signals.append({
                 "type": "SELL",
-                "asset": coin_id.upper(),
-                "price": round(price, 4)
+                "asset": s["coin"].upper(),
+                "price": round(s["price"], 4),
+                "score": s["sell_score"]
             })
 
-        # =====================
-        # ESPERAR
-        # =====================
+    # nenhum sinal
+    if not signals:
 
-        else:
+        signals.append({
+            "type": "WAIT",
+            "message": "Mercado sem oportunidade clara no momento"
+        })
 
-            signals.append({
-                "type": "WAIT",
-                "asset": coin_id.upper(),
-                "price": round(price, 4)
-            })
+    CACHE = signals
 
-    return signals[:5]
-
+    return signals
