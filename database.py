@@ -1,186 +1,196 @@
 import os
-import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from config import DATABASE_URL
+from datetime import datetime, timezone
 
-# =========================
-# CONEXÃO
-# =========================
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-
 # =========================
-# SETUP — criar tabelas
+# SETUP
 # =========================
 
 def setup_db():
-    conn = get_conn()
-    cur = conn.cursor()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
 
-    # tabela de trades
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id SERIAL PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT NOW(),
-            symbol TEXT NOT NULL,
-            entry_price FLOAT NOT NULL,
-            target_price FLOAT NOT NULL,
-            stop_price FLOAT NOT NULL,
-            current_price FLOAT,
-            result TEXT DEFAULT 'OPEN',
-            profit_pct FLOAT,
-            closed_at TIMESTAMP
-        )
-    """)
+            # tabela de sinais (histórico completo)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS signals (
+                    id          SERIAL PRIMARY KEY,
+                    created_at  TIMESTAMPTZ DEFAULT NOW(),
+                    symbol      TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,       -- BUY / SELL / WAIT
+                    price       NUMERIC,
+                    score       INTEGER,
+                    rsi         NUMERIC,
+                    adx         NUMERIC,
+                    entry       NUMERIC,
+                    target      NUMERIC,
+                    stop        NUMERIC,
+                    daily_trend TEXT,
+                    indicators  TEXT,               -- JSON array
+                    ai_prediction TEXT,
+                    outcome     TEXT DEFAULT 'OPEN', -- OPEN / WIN / LOSS / MANUAL
+                    profit_pct  NUMERIC             -- preenchido quando fecha
+                )
+            """)
 
-    # tabela de sinais do radar
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id SERIAL PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT NOW(),
-            signal_type TEXT NOT NULL,
-            asset TEXT NOT NULL,
-            price FLOAT NOT NULL,
-            score INT,
-            rsi FLOAT,
-            prediction TEXT
-        )
-    """)
+            # tabela de trades abertos
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    id           SERIAL PRIMARY KEY,
+                    created_at   TIMESTAMPTZ DEFAULT NOW(),
+                    symbol       TEXT NOT NULL,
+                    entry_price  NUMERIC NOT NULL,
+                    target_price NUMERIC NOT NULL,
+                    stop_price   NUMERIC NOT NULL,
+                    signal_id    INTEGER REFERENCES signals(id),
+                    status       TEXT DEFAULT 'OPEN'  -- OPEN / WIN / LOSS
+                )
+            """)
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        conn.commit()
     print("✅ Banco de dados pronto")
-
-
-# =========================
-# TRADES
-# =========================
-
-def log_trade(symbol, entry, target, stop):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO trades (symbol, entry_price, target_price, stop_price, current_price, result)
-        VALUES (%s, %s, %s, %s, %s, 'OPEN')
-        RETURNING id
-    """, (symbol, entry, target, stop, entry))
-
-    trade_id = cur.fetchone()["id"]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return trade_id
-
-
-def get_open_trades():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM trades WHERE result = 'OPEN' ORDER BY created_at DESC")
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def close_trade(trade_id, current_price, result):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("SELECT entry_price FROM trades WHERE id = %s", (trade_id,))
-    row = cur.fetchone()
-
-    if not row:
-        return
-
-    entry = row["entry_price"]
-    profit_pct = round(((current_price - entry) / entry) * 100, 2)
-
-    cur.execute("""
-        UPDATE trades
-        SET result = %s,
-            current_price = %s,
-            profit_pct = %s,
-            closed_at = NOW()
-        WHERE id = %s
-    """, (result, current_price, profit_pct, trade_id))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def get_portfolio():
-    """Retorna dict {symbol: entry_price} de trades abertos"""
-    trades = get_open_trades()
-    return {t["symbol"].lower(): t["entry_price"] for t in trades}
 
 
 # =========================
 # SINAIS
 # =========================
 
-def log_signal(signal_type, asset, price, score=None, rsi=None, prediction=None):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO signals (signal_type, asset, price, score, rsi, prediction)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (signal_type, asset, price, score, rsi, prediction))
-
-    conn.commit()
-    cur.close()
-    conn.close()
+def log_signal(signal):
+    """Salva sinal no histórico"""
+    import json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO signals
+                    (symbol, signal_type, price, score, rsi, adx,
+                     entry, target, stop, daily_trend, indicators, ai_prediction)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (
+                signal.get("asset", ""),
+                signal.get("type", ""),
+                signal.get("price"),
+                signal.get("score"),
+                signal.get("rsi"),
+                signal.get("adx"),
+                signal.get("entry"),
+                signal.get("target"),
+                signal.get("stop"),
+                signal.get("daily_trend"),
+                json.dumps(signal.get("indicators", [])),
+                signal.get("ai_prediction")
+            ))
+            row = cur.fetchone()
+        conn.commit()
+    return row["id"]
 
 
 def get_recent_signals(limit=10):
-    conn = get_conn()
-    cur = conn.cursor()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, created_at, symbol, signal_type, price,
+                       score, rsi, adx, entry, target, stop,
+                       outcome, profit_pct
+                FROM signals
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (limit,))
+            return [dict(r) for r in cur.fetchall()]
 
-    cur.execute("""
-        SELECT * FROM signals
-        ORDER BY created_at DESC
-        LIMIT %s
-    """, (limit,))
 
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [dict(r) for r in rows]
+def update_signal_outcome(signal_id, outcome, profit_pct):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE signals
+                SET outcome = %s, profit_pct = %s
+                WHERE id = %s
+            """, (outcome, profit_pct, signal_id))
+        conn.commit()
 
 
 # =========================
-# PERFORMANCE
+# TRADES
+# =========================
+
+def log_trade(symbol, entry, target, stop, signal_id=None):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO trades (symbol, entry_price, target_price, stop_price, signal_id)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+            """, (symbol, entry, target, stop, signal_id))
+            row = cur.fetchone()
+        conn.commit()
+    return row["id"]
+
+
+def get_open_trades():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM trades WHERE status = 'OPEN'
+                ORDER BY created_at DESC
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def close_trade(trade_id, status, profit_pct=None):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE trades SET status = %s WHERE id = %s
+                RETURNING signal_id
+            """, (status, trade_id))
+            row = cur.fetchone()
+        conn.commit()
+
+    # atualiza o sinal vinculado
+    if row and row["signal_id"] and profit_pct is not None:
+        update_signal_outcome(row["signal_id"], status, profit_pct)
+
+
+def get_portfolio():
+    trades = get_open_trades()
+    return {t["symbol"] for t in trades}
+
+
+# =========================
+# PERFORMANCE 30 DIAS
 # =========================
 
 def get_performance():
-    conn = get_conn()
-    cur = conn.cursor()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
 
-    cur.execute("""
-        SELECT
-            COUNT(*) FILTER (WHERE result = 'WIN') AS wins,
-            COUNT(*) FILTER (WHERE result = 'LOSS') AS losses,
-            COUNT(*) FILTER (WHERE result = 'OPEN') AS open_trades,
-            ROUND(AVG(profit_pct) FILTER (WHERE result IN ('WIN','LOSS'))::numeric, 2) AS avg_profit,
-            ROUND(SUM(profit_pct) FILTER (WHERE result IN ('WIN','LOSS'))::numeric, 2) AS total_profit
-        FROM trades
-    """)
+            # sinais dos últimos 30 dias
+            cur.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE outcome = 'WIN')  AS wins,
+                    COUNT(*) FILTER (WHERE outcome = 'LOSS') AS losses,
+                    COUNT(*) FILTER (WHERE outcome = 'OPEN') AS open_signals,
+                    AVG(profit_pct) FILTER (WHERE outcome IN ('WIN','LOSS')) AS avg_profit,
+                    SUM(profit_pct) FILTER (WHERE outcome IN ('WIN','LOSS')) AS total_profit
+                FROM signals
+                WHERE signal_type = 'BUY'
+                  AND created_at >= NOW() - INTERVAL '30 days'
+            """)
+            row = dict(cur.fetchone())
 
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+            # trades abertos
+            cur.execute("SELECT COUNT(*) AS cnt FROM trades WHERE status = 'OPEN'")
+            row["open_trades"] = cur.fetchone()["cnt"]
 
-    data = dict(row)
-    total = (data["wins"] or 0) + (data["losses"] or 0)
-    data["total_closed"] = total
-    data["winrate"] = round((data["wins"] / total * 100), 2) if total > 0 else 0
+        wins   = row.get("wins") or 0
+        losses = row.get("losses") or 0
+        total  = wins + losses
+        row["winrate"] = (wins / total * 100) if total > 0 else 0.0
 
-    return data
+        return row
