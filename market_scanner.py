@@ -25,7 +25,7 @@ def save_trades(data):
 
 
 # =========================
-# PEGAR TOP 200
+# API COINGECKO
 # =========================
 
 def get_top_coins():
@@ -35,7 +35,7 @@ def get_top_coins():
     params = {
         "vs_currency": "usd",
         "order": "volume_desc",
-        "per_page": 200,
+        "per_page": 50,
         "page": 1
     }
 
@@ -54,7 +54,6 @@ def get_top_coins():
 # =========================
 
 def ema(data, period):
-
     return data.ewm(span=period, adjust=False).mean()
 
 
@@ -79,7 +78,6 @@ def macd(data):
     ema26 = ema(data, 26)
 
     macd_line = ema12 - ema26
-
     signal = ema(macd_line, 9)
 
     return macd_line, signal
@@ -199,7 +197,7 @@ def run_radar():
 
     signals = []
 
-    for coin in coins[:50]:
+    for coin in coins:
 
         coin_id = coin["id"]
 
@@ -211,7 +209,7 @@ def run_radar():
         price = df["close"].iloc[-1]
 
         # =====================
-        # SE NÃO TEM TRADE
+        # COMPRA
         # =====================
 
         if coin_id not in trades:
@@ -223,25 +221,21 @@ def run_radar():
                 entry = price
 
                 trades[coin_id] = {
-
                     "entry": entry,
-                    "tp1": entry * 1.06,
-                    "tp2": entry * 1.10,
-                    "tp3": entry * 1.15,
+                    "tp": entry * 1.06,
                     "stop": entry * 0.97
                 }
 
                 signals.append({
-
                     "type": "BUY",
                     "asset": coin_id.upper(),
-                    "entry": round(entry, 4),
-                    "tp": round(entry * 1.06, 4),
+                    "price": round(entry, 4),
+                    "target": round(entry * 1.06, 4),
                     "score": score
                 })
 
         # =====================
-        # TRADE ABERTO
+        # VENDA
         # =====================
 
         else:
@@ -250,10 +244,9 @@ def run_radar():
 
             score = sell_score(df)
 
-            if price >= trade["tp1"] and score >= 7:
+            if price >= trade["tp"] or score >= 7:
 
                 signals.append({
-
                     "type": "SELL",
                     "asset": coin_id.upper(),
                     "price": round(price, 4)
